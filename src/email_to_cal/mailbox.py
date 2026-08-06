@@ -86,10 +86,12 @@ class Mailbox:
 
     # -- cursor ---------------------------------------------------------------------
 
-    def _sync_cursor(self, box: MailBox) -> int:
+    def _uidvalidity(self, box: MailBox) -> int:
+        return int(box.folder.status(self._settings.imap_folder, ["UIDVALIDITY"])["UIDVALIDITY"])
+
+    def _sync_cursor(self, box: MailBox, uidvalidity: int) -> int:
         """Return the UID to start fetching from, resyncing if UIDVALIDITY moved."""
         folder = self._settings.imap_folder
-        uidvalidity = int(box.folder.status(folder, ["UIDVALIDITY"])["UIDVALIDITY"])
         stored = self._store.get_cursor(folder)
 
         if stored is None:
@@ -116,31 +118,38 @@ class Mailbox:
 
     def _initial_uid(self, box: MailBox) -> int:
         """Where a fresh cursor begins, honouring the configured backfill window."""
+        all_uids = [int(u) for u in box.uids()]
+        next_uid = max(all_uids) + 1 if all_uids else 1
+
         days = self._settings.first_run_lookback_days
         if days <= 0:
-            uids = box.uids()
-            return (max(int(u) for u in uids) + 1) if uids else 1
-        since = (datetime.now(UTC) - timedelta(days=days)).date()
-        uids = box.uids(AND(date_gte=since))
-        return min(int(u) for u in uids) if uids else 1
+            return next_uid
 
-    def _save_cursor(self, box: MailBox, last_uid: int) -> None:
-        folder = self._settings.imap_folder
-        uidvalidity = int(box.folder.status(folder, ["UIDVALIDITY"])["UIDVALIDITY"])
-        self._store.set_cursor(folder, uidvalidity, last_uid)
+        since = (datetime.now(UTC) - timedelta(days=days)).date()
+        recent = [int(u) for u in box.uids(AND(date_gte=since))]
+        # Nothing inside the window means nothing to backfill. Falling back to UID 1 here
+        # would silently replay the entire mailbox through the model.
+        return min(recent) if recent else next_uid
 
     # -- fetching -------------------------------------------------------------------
 
     def fetch_new(self, box: MailBox) -> Iterator[tuple[int, bytes]]:
-        """Yield (uid, raw_rfc822) for everything past the cursor, advancing as we go."""
-        start = self._sync_cursor(box)
+        """Yield (uid, raw_rfc822) for everything past the cursor, advancing as we go.
+
+        The cursor advances only after the consumer returns, so a message that raises is
+        retried on the next pass rather than lost.
+        """
+        folder = self._settings.imap_folder
+        uidvalidity = self._uidvalidity(box)
+        start = self._sync_cursor(box, uidvalidity)
+
         # `n:*` always returns at least the highest UID, so filter against the cursor.
         for message in box.fetch(f"UID {start}:*", mark_seen=False, bulk=False):
             uid = int(message.uid) if message.uid else 0
             if uid < start:
                 continue
             yield uid, message.obj.as_bytes()
-            self._save_cursor(box, uid)
+            self._store.set_cursor(folder, uidvalidity, uid)
 
     def idle(self, box: MailBox) -> bool:
         """Wait for activity. Returns True if the server reported something."""
