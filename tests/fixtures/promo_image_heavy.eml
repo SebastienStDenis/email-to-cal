@@ -1,0 +1,40 @@
+Subject: Concerts near you this weekend
+From: Spotify <no-reply@spotify.example>
+To: Sebastien <test@icloud.com>
+Date: Mon, 10 Aug 2026 09:14:02 +0200
+Message-ID: <digest-2026-08-10@spotify.example>
+MIME-Version: 1.0
+Content-Type: multipart/alternative;
+ boundary="===============7728936689264506900=="
+
+--===============7728936689264506900==
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Open this email to see concerts near you.
+
+--===============7728936689264506900==
+MIME-Version: 1.0
+Content-Type: multipart/related;
+ boundary="===============2584432166150367176=="
+
+--===============2584432166150367176==
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+
+<html><body><img src=3D"cid:banner001"><p>Radiohead - The O2, 2 Nov. Tickets =
+on sale Friday.</p></body></html>
+
+--===============2584432166150367176==
+Content-Type: image/png
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="banner.png"
+Content-ID: <banner001>
+MIME-Version: 1.0
+
+iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4
+AAAAAElFTkSuQmCC
+
+--===============2584432166150367176==--
+
+--===============7728936689264506900==--

@@ -1,0 +1,236 @@
+"""Anthropic calls: decide whether an email is a commitment, and extract the events."""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import logging
+from typing import Any
+
+import anthropic
+
+from .config import Settings
+from .schema import EmailDocument, ExtractionResult
+
+log = logging.getLogger(__name__)
+
+SYSTEM_PROMPT = """\
+You read one email and decide whether it is evidence that the recipient personally \
+committed to something that belongs on their calendar. You then extract those events.
+
+# The gate
+
+Set is_committed to true only when the recipient themselves booked, bought, reserved, \
+registered for, checked in to, or was directly invited to something, or when the email \
+confirms or reminds them about such a thing.
+
+Examples that pass: "Your tickets for Radiohead at the O2", "Booking confirmed - table \
+for 4 at 19:30", "Your flight LX318 departs tomorrow", "Order confirmation: 2 x Museum \
+entry, Saturday", "Jane has invited you to a design review", "Reminder: your dentist \
+appointment is on Thursday".
+
+Examples that fail: "Concerts near you this weekend", "Radiohead tickets on sale Friday", \
+"5 events you shouldn't miss in Berlin", a newsletter listing upcoming shows, a price \
+alert on a flight route, a digest of what friends are attending, an ad for a restaurant, \
+an event mentioned only as background in a longer message.
+
+The distinction is commitment, not topic. A concert email can be either. If the email \
+merely tells the recipient that an event exists, or invites them to buy something, it \
+fails the gate even when it contains a precise date and venue. If you are unsure, set \
+is_committed to false and say why. A missing calendar entry is a small annoyance; a \
+calendar full of advertisements is a broken product.
+
+# Extracting events
+
+Emit one event per distinct commitment. A return flight is two events. A hotel stay is \
+one event. Do not invent detail the email does not contain.
+
+Times: report start_local and end_local as the local wall-clock time at the place the \
+event happens, as naive ISO 8601 with no offset and no zone suffix. Never convert to UTC \
+and never apply an offset yourself. Set start_tz only when the email states or clearly \
+implies the zone. For flights, fill in departure_iata and arrival_iata instead and leave \
+the zones null - the airport codes resolve to zones downstream, which is more reliable \
+than inferring them.
+
+Set all_day true only when the email gives no meaningful clock time. A hotel stay with a \
+check-in time is not all-day.
+
+Relative dates ("this Friday", "tomorrow") resolve against the email's sent date, which \
+is given to you below.
+
+Titles are short and scannable: "LX318 ZRH to LHR", "Radiohead at the O2", "Dinner at \
+Kadeau". Put booking references, seats, terminals, and confirmation numbers in \
+description, not the title.
+
+Confidence reflects how certain you are that this specific event, with these specific \
+times, is real and committed. Lower it when times are implied rather than stated.
+"""
+
+
+def _render_email(doc: EmailDocument, settings: Settings) -> str:
+    """Lay the email out for the model, structured tiers first."""
+    lines = [
+        "<email>",
+        f"From: {doc.sender}",
+        f"To: {doc.to}",
+        f"Subject: {doc.subject}",
+        f"Sent: {doc.date.isoformat() if doc.date else 'unknown'}",
+        f"Recipient's default timezone: {settings.default_timezone}",
+        "",
+    ]
+
+    if doc.json_ld:
+        lines += [
+            "<structured_data format='schema.org JSON-LD, embedded by the sender'>",
+            json.dumps(doc.json_ld, indent=2, default=str)[:20000],
+            "</structured_data>",
+            "",
+        ]
+
+    if doc.ics_events:
+        lines += [
+            "<calendar_attachment>",
+            json.dumps(doc.ics_events, indent=2, default=str)[:8000],
+            "</calendar_attachment>",
+            "",
+        ]
+
+    body = doc.body_text[:40000]
+    lines += ["<body>", body if body else "(no readable text body)", "</body>", "</email>"]
+    return "\n".join(lines)
+
+
+def _categories_block(settings: Settings) -> str:
+    if not settings.categories:
+        return "\n\nNo categories are configured. Always set category to null."
+    rendered = "\n".join(f"- {r.name}: {r.description}" for r in settings.categories)
+    return (
+        "\n\n# Categories\n\nAssign each event to exactly one of these category names, or "
+        "null if none genuinely fit. Do not invent names.\n\n" + rendered
+    )
+
+
+def _content_blocks(doc: EmailDocument, settings: Settings) -> list[Any]:
+    """Text first, then images and PDFs only when the text tiers came up short."""
+    blocks: list[Any] = [{"type": "text", "text": _render_email(doc, settings)}]
+
+    if not settings.enable_vision:
+        return blocks
+
+    # Attachments are worth the tokens when the text is thin, or when a PDF is present at
+    # all - e-tickets and boarding passes carry the real detail in the PDF.
+    text_is_thin = len(doc.body_text) < 400 and not doc.has_structured_source
+    for attachment in doc.attachments:
+        if attachment.is_pdf:
+            blocks.append(
+                {
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "application/pdf",
+                        "data": base64.standard_b64encode(attachment.data).decode(),
+                    },
+                }
+            )
+        elif attachment.is_image and text_is_thin:
+            blocks.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": attachment.media_type,
+                        "data": base64.standard_b64encode(attachment.data).decode(),
+                    },
+                }
+            )
+    return blocks
+
+
+def cache_key(doc: EmailDocument, settings: Settings) -> str:
+    """Hash everything that could change the answer, so replays are free."""
+    material = json.dumps(
+        {
+            "message_id": doc.message_id,
+            "body": doc.body_text,
+            "json_ld": doc.json_ld,
+            "ics": doc.ics_events,
+            "attachments": sorted(a.filename for a in doc.attachments),
+            "model": settings.anthropic_model,
+            "effort": settings.anthropic_effort,
+            "categories": [r.model_dump() for r in settings.categories],
+            "vision": settings.enable_vision,
+        },
+        sort_keys=True,
+        default=str,
+    )
+    return hashlib.sha256(material.encode()).hexdigest()
+
+
+class Extractor:
+    """Wraps the Anthropic client with the prompt, schema, and enrichment pass."""
+
+    def __init__(self, settings: Settings, client: anthropic.Anthropic | None = None) -> None:
+        self._settings = settings
+        self._client = client or anthropic.Anthropic(api_key=settings.anthropic_api_key)
+
+    def extract(self, doc: EmailDocument) -> ExtractionResult:
+        settings = self._settings
+        response = self._client.messages.parse(
+            model=settings.anthropic_model,
+            max_tokens=8000,
+            system=SYSTEM_PROMPT + _categories_block(settings),
+            output_format=ExtractionResult,
+            output_config={"effort": settings.anthropic_effort},
+            messages=[{"role": "user", "content": _content_blocks(doc, settings)}],
+        )
+        result = response.parsed_output
+        if result is None:
+            raise RuntimeError(f"model returned no parseable output (stop={response.stop_reason})")
+        return result
+
+    def lookup_timezone(self, location: str) -> str | None:
+        """Resolve a venue to an IANA zone via web search.
+
+        Deliberately a second, separate call: the search tool emits citation-bearing text
+        blocks, and citations are incompatible with structured output. Two cheap calls beat
+        one that intermittently 400s.
+        """
+        if not self._settings.enable_web_search:
+            return None
+
+        try:
+            search = self._client.messages.create(
+                model=self._settings.anthropic_model,
+                max_tokens=2000,
+                output_config={"effort": "low"},
+                tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 3}],
+                messages=[
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Which city and country is this venue in: {location!r}? "
+                            "Answer in one sentence."
+                        ),
+                    }
+                ],
+            )
+            summary = "\n".join(b.text for b in search.content if b.type == "text").strip()
+            if not summary:
+                return None
+
+            zone = self._client.messages.create(
+                model=self._settings.anthropic_model,
+                max_tokens=200,
+                output_config={"effort": "low"},
+                system=(
+                    "Reply with a single IANA timezone identifier and nothing else, "
+                    "for example Europe/Zurich. Reply with UNKNOWN if you cannot tell."
+                ),
+                messages=[{"role": "user", "content": summary}],
+            )
+            answer = "".join(b.text for b in zone.content if b.type == "text").strip()
+            return None if answer.upper() == "UNKNOWN" else answer
+        except anthropic.APIError:
+            log.warning("timezone web lookup failed for %r", location, exc_info=True)
+            return None

@@ -1,0 +1,33 @@
+Subject: Your tickets: Radiohead at The O2
+From: Ticketing Co <orders@ticketing.example>
+To: Sebastien <test@icloud.com>
+Date: Mon, 10 Aug 2026 09:14:02 +0200
+Message-ID: <order-tck88213@ticketing.example>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="===============9130788949212193521=="
+
+--===============9130788949212193521==
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Your order TCK-88213 is confirmed.
+
+Radiohead, The O2 Arena, London
+Monday 2 November 2026, 19:30
+2 x standing tickets
+
+--===============9130788949212193521==
+Content-Type: text/calendar
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="invite.ics"
+MIME-Version: 1.0
+
+QkVHSU46VkNBTEVOREFSClZFUlNJT046Mi4wClBST0RJRDotLy9UaWNrZXRpbmcgQ28vL0VOCk1F
+VEhPRDpSRVFVRVNUCkJFR0lOOlZFVkVOVApVSUQ6ZXZ0LTk5MjEzQHRpY2tldGluZy5leGFtcGxl
+ClNVTU1BUlk6UmFkaW9oZWFkIC0gTGl2ZSBhdCB0aGUgTzIKTE9DQVRJT046VGhlIE8yIEFyZW5h
+LCBQZW5pbnN1bGEgU3F1YXJlLCBMb25kb24gU0UxMCAwRFgKRFRTVEFSVDtUWklEPUV1cm9wZS9M
+b25kb246MjAyNjExMDJUMTkzMDAwCkRURU5EO1RaSUQ9RXVyb3BlL0xvbmRvbjoyMDI2MTEwMlQy
+MjMwMDAKREVTQ1JJUFRJT046RG9vcnMgMTg6MzAuIE9yZGVyIFRDSy04ODIxMy4KRU5EOlZFVkVO
+VApFTkQ6VkNBTEVOREFSCg==
+
+--===============9130788949212193521==--

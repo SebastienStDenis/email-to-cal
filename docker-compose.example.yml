@@ -1,0 +1,11 @@
+services:
+  email-to-cal:
+    image: ghcr.io/OWNER/email-to-cal:latest
+    container_name: email-to-cal
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      # Holds credentials.json, token.json, and state.sqlite. Back this up.
+      - ./data:/data
+    # The container writes token.json back after each refresh, so /data must be writable.
+    user: "10001:10001"

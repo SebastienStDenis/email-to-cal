@@ -1,0 +1,35 @@
+Subject: Your ANA booking is confirmed - NH106 Tokyo to Los Angeles
+From: All Nippon Airways <no-reply@ana.example>
+To: Sebastien <test@icloud.com>
+Date: Mon, 10 Aug 2026 09:14:02 +0200
+Message-ID: <flight-k3tq9p@ana.example>
+MIME-Version: 1.0
+Content-Type: multipart/alternative;
+ boundary="===============8825990161320541061=="
+
+--===============8825990161320541061==
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Thanks for booking with ANA.
+
+Confirmation: K3TQ9P
+NH106  Tokyo Haneda (HND) 18:35  ->  Los Angeles (LAX) 11:25
+Monday 14 September 2026
+
+--===============8825990161320541061==
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+MIME-Version: 1.0
+
+<html><head><script type=3D"application/ld+json">{"@context": "http://schema.=
+org", "@type": "FlightReservation", "reservationNumber": "K3TQ9P", "reservati=
+onFor": {"@type": "Flight", "flightNumber": "NH106", "airline": {"@type": "Ai=
+rline", "iataCode": "NH"}, "departureAirport": {"@type": "Airport", "iataCode=
+": "HND"}, "departureTime": "2026-09-14T18:35:00+09:00", "arrivalAirport": {"=
+@type": "Airport", "iataCode": "LAX"}, "arrivalTime": "2026-09-14T11:25:00-07=
+:00"}}</script></head><body><h1>Booking confirmed</h1><p>Confirmation <b>K3TQ=
+9P</b></p><table><tr><td>NH106</td><td>HND 18:35</td><td>LAX 11:25</td></tr><=
+/table></body></html>
+
+--===============8825990161320541061==--

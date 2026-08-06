@@ -1,0 +1,63 @@
+[project]
+name = "email-to-cal"
+version = "0.1.0"
+description = "Watch an iCloud mailbox and turn committed personal events into Google Calendar entries."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "airportsdata>=20250909",
+    "anthropic>=0.120.0",
+    "beautifulsoup4>=4.13",
+    "google-api-python-client>=2.190",
+    "google-auth-oauthlib>=1.2",
+    "html2text>=2025.4.15",
+    "icalendar>=6.3",
+    "imap-tools>=1.15",
+    "pydantic>=2.11",
+    "pydantic-settings>=2.10",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+email-to-cal = "email_to_cal.cli:main"
+
+[dependency-groups]
+dev = [
+    # Imported directly by tests to construct Anthropic error responses.
+    "httpx>=0.28",
+    "mypy>=1.15",
+    "pytest>=8.3",
+    "ruff>=0.9",
+    "types-pyyaml>=6.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/email_to_cal"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src"]
+
+# The Google client libraries ship no type information, so calls into them are untyped.
+[[tool.mypy.overrides]]
+module = ["email_to_cal.gcal"]
+disallow_untyped_calls = false
+
+[[tool.mypy.overrides]]
+module = ["imap_tools.*", "googleapiclient.*", "google_auth_oauthlib.*", "airportsdata.*", "html2text.*", "icalendar.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
