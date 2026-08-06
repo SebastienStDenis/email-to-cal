@@ -10,7 +10,23 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Publishing runs in parallel with ci.yml, so it has to prove the tree is good itself.
+  # Without this, a commit that fails lint or tests still ships as :latest.
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --frozen --all-groups
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy
+      - run: uv run pytest -q
+
   publish:
+    needs: verify
     runs-on: ubuntu-latest
     permissions:
       contents: read

@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from email_to_cal.config import Settings
-from email_to_cal.mailbox import Mailbox
+from email_to_cal.mailbox import MAX_ATTEMPTS, Mailbox
 from email_to_cal.store import Store
 
 from .conftest import fixture_bytes
@@ -70,13 +70,25 @@ def mailbox(settings: Settings) -> tuple[Mailbox, Store]:
     return Mailbox(settings, store), store
 
 
+def drain(mb: Mailbox, box: FakeBox, fail_on: set[int] | None = None) -> list[int]:
+    """Consume a pass the way the app does: acknowledge every message either way."""
+    seen = []
+    for uid, _ in mb.fetch_new(box):
+        seen.append(uid)
+        if fail_on and uid in fail_on:
+            mb.ack(uid, error="boom")
+        else:
+            mb.ack(uid)
+    return seen
+
+
 def test_first_run_skips_existing_mail_by_default(
     settings: Settings, mailbox: tuple[Mailbox, Store]
 ) -> None:
     mb, store = mailbox
     box = FakeBox([1, 2, 3])
 
-    assert list(mb.fetch_new(box)) == []
+    assert drain(mb, box) == []
     assert store.get_cursor("INBOX") == (100, 3)
     store.close()
 
@@ -86,14 +98,14 @@ def test_new_mail_after_the_cursor_is_yielded_once(
 ) -> None:
     mb, store = mailbox
     box = FakeBox([1, 2, 3])
-    list(mb.fetch_new(box))
+    drain(mb, box)
 
     box.messages[4] = fixture_bytes("concert_ics.eml")
-    assert [uid for uid, _ in mb.fetch_new(box)] == [4]
+    assert drain(mb, box) == [4]
     assert store.get_cursor("INBOX") == (100, 4)
 
     # A second pass with nothing new must yield nothing, despite `4:*` returning UID 4.
-    assert list(mb.fetch_new(box)) == []
+    assert drain(mb, box) == []
     store.close()
 
 
@@ -102,17 +114,75 @@ def test_cursor_does_not_advance_past_a_message_that_raises(
 ) -> None:
     mb, store = mailbox
     box = FakeBox([1])
-    list(mb.fetch_new(box))
+    drain(mb, box)
     box.messages.update({2: b"a", 3: b"b", 4: b"c"})
 
     with pytest.raises(RuntimeError):
         for uid, _ in mb.fetch_new(box):
             if uid == 3:
                 raise RuntimeError("boom")
+            mb.ack(uid)
 
     # UID 2 completed, 3 did not. Next pass must retry from 3.
     assert store.get_cursor("INBOX") == (100, 2)
-    assert [uid for uid, _ in mb.fetch_new(box)] == [3, 4]
+    assert drain(mb, box) == [3, 4]
+    store.close()
+
+
+def test_a_failed_message_is_retried_and_then_written_off(
+    settings: Settings, mailbox: tuple[Mailbox, Store]
+) -> None:
+    """The failure that used to vanish: caught by the consumer, so the generator resumed
+    normally and the cursor sailed past a message nothing had handled."""
+    mb, store = mailbox
+    box = FakeBox([1])
+    drain(mb, box)
+    box.messages.update({2: b"a", 3: b"b"})
+
+    # Each pass retries UID 2 and stops there, leaving 3 untouched.
+    for expected_attempts in (1, 2):
+        assert drain(mb, box, fail_on={2}) == [2]
+        assert store.get_cursor("INBOX") == (100, 1)
+        assert store.list_failures()[0][3] == expected_attempts
+
+    # Third strike: UID 2 is written off rather than stalling the mailbox forever, and the
+    # pass carries on to the message stuck behind it.
+    assert drain(mb, box, fail_on={2}) == [2, 3]
+    assert store.get_cursor("INBOX") == (100, 3)
+    assert store.list_failures()[0][3] == MAX_ATTEMPTS
+
+    assert drain(mb, box) == []
+    store.close()
+
+
+def test_a_recovered_message_clears_its_failure_record(
+    settings: Settings, mailbox: tuple[Mailbox, Store]
+) -> None:
+    mb, store = mailbox
+    box = FakeBox([1])
+    drain(mb, box)
+    box.messages[2] = b"a"
+
+    drain(mb, box, fail_on={2})
+    assert store.list_failures()
+
+    drain(mb, box)
+    assert store.list_failures() == []
+    assert store.get_cursor("INBOX") == (100, 2)
+    store.close()
+
+
+def test_an_unacknowledged_message_holds_the_cursor(
+    settings: Settings, mailbox: tuple[Mailbox, Store]
+) -> None:
+    mb, store = mailbox
+    box = FakeBox([1])
+    drain(mb, box)
+    box.messages.update({2: b"a", 3: b"b"})
+
+    # A consumer that forgets to ack must not be read as success.
+    assert [uid for uid, _ in mb.fetch_new(box)] == [2]
+    assert store.get_cursor("INBOX") == (100, 1)
     store.close()
 
 
@@ -121,13 +191,13 @@ def test_uidvalidity_change_resyncs_instead_of_replaying(
 ) -> None:
     mb, store = mailbox
     box = FakeBox([1, 2, 3])
-    list(mb.fetch_new(box))
+    drain(mb, box)
 
     # The server renumbered everything; the old cursor is meaningless.
     box.uidvalidity = 200
     box.messages = {u: fixture_bytes("restaurant_plain.eml") for u in (1, 2, 3)}
 
-    assert list(mb.fetch_new(box)) == []
+    assert drain(mb, box) == []
     assert store.get_cursor("INBOX") == (200, 3)
     store.close()
 
@@ -141,13 +211,13 @@ def test_lookback_window_with_no_matches_does_not_replay_the_mailbox(
     mb = Mailbox(settings, store)
     box = FakeBox([1, 2, 3, 4, 5])
 
-    assert list(mb.fetch_new(box)) == []
+    assert drain(mb, box) == []
     assert store.get_cursor("INBOX") == (100, 5)
     store.close()
 
 
 def test_empty_mailbox(settings: Settings, mailbox: tuple[Mailbox, Store]) -> None:
     mb, store = mailbox
-    assert list(mb.fetch_new(FakeBox([]))) == []
+    assert drain(mb, FakeBox([])) == []
     assert store.get_cursor("INBOX") == (100, 0)
     store.close()

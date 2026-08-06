@@ -25,6 +25,15 @@ CREATE TABLE IF NOT EXISTS emitted_events (
     calendar_id  TEXT NOT NULL,
     created_at   REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS failed_messages (
+    folder       TEXT NOT NULL,
+    uidvalidity  INTEGER NOT NULL,
+    uid          INTEGER NOT NULL,
+    attempts     INTEGER NOT NULL,
+    last_error   TEXT NOT NULL,
+    updated_at   REAL NOT NULL,
+    PRIMARY KEY (folder, uidvalidity, uid)
+);
 CREATE TABLE IF NOT EXISTS calendar_ids (
     name         TEXT PRIMARY KEY,
     calendar_id  TEXT NOT NULL
@@ -108,6 +117,38 @@ class Store:
             "SELECT 1 FROM emitted_events WHERE event_id = ?", (event_id,)
         ).fetchone()
         return row is not None
+
+    # -- failures -------------------------------------------------------------------
+
+    def record_failure(self, folder: str, uidvalidity: int, uid: int, error: str) -> int:
+        """Count a failed attempt at one message and return the new total."""
+        self._conn.execute(
+            "INSERT INTO failed_messages "
+            "(folder, uidvalidity, uid, attempts, last_error, updated_at) "
+            "VALUES (?, ?, ?, 1, ?, ?) "
+            "ON CONFLICT(folder, uidvalidity, uid) DO UPDATE SET "
+            "attempts = attempts + 1, last_error = excluded.last_error, "
+            "updated_at = excluded.updated_at",
+            (folder, uidvalidity, uid, error[:2000], time.time()),
+        )
+        row = self._conn.execute(
+            "SELECT attempts FROM failed_messages WHERE folder = ? AND uidvalidity = ? AND uid = ?",
+            (folder, uidvalidity, uid),
+        ).fetchone()
+        return int(row[0]) if row else 1
+
+    def clear_failure(self, folder: str, uidvalidity: int, uid: int) -> None:
+        self._conn.execute(
+            "DELETE FROM failed_messages WHERE folder = ? AND uidvalidity = ? AND uid = ?",
+            (folder, uidvalidity, uid),
+        )
+
+    def list_failures(self) -> list[tuple[str, int, int, int, str]]:
+        rows = self._conn.execute(
+            "SELECT folder, uidvalidity, uid, attempts, last_error FROM failed_messages "
+            "ORDER BY updated_at DESC"
+        ).fetchall()
+        return [(r[0], r[1], r[2], r[3], r[4]) for r in rows]
 
     # -- calendar id cache ----------------------------------------------------------
 

@@ -15,6 +15,11 @@ from .schema import EmailDocument, ExtractionResult
 
 log = logging.getLogger(__name__)
 
+# Shared by thinking and the answer, so this is not just the size of the JSON.
+MAX_TOKENS = 16000
+# Base64 inflates by 4/3 and the API caps a request at 32 MB; leave clear air.
+MAX_TOTAL_ENCODED_BYTES = 20 * 1024 * 1024
+
 SYSTEM_PROMPT = """\
 You read one email and decide whether it is evidence that the recipient personally \
 committed to something that belongs on their calendar. You then extract those events.
@@ -112,50 +117,56 @@ def _categories_block(settings: Settings) -> str:
 
 
 def _content_blocks(doc: EmailDocument, settings: Settings) -> list[Any]:
-    """Text first, then images and PDFs only when the text tiers came up short."""
-    blocks: list[Any] = [{"type": "text", "text": _render_email(doc, settings)}]
+    """Attachments first, then the text. Documents read better placed before the prompt."""
+    media: list[Any] = []
 
-    if not settings.enable_vision:
-        return blocks
+    if settings.enable_vision:
+        # Attachments earn their tokens when the text is thin, or when a PDF is present at
+        # all - e-tickets and boarding passes carry the real detail in the PDF.
+        text_is_thin = len(doc.body_text) < 400 and not doc.has_structured_source
+        encoded_total = 0
 
-    # Attachments are worth the tokens when the text is thin, or when a PDF is present at
-    # all - e-tickets and boarding passes carry the real detail in the PDF.
-    text_is_thin = len(doc.body_text) < 400 and not doc.has_structured_source
-    for attachment in doc.attachments:
-        if attachment.is_pdf:
-            blocks.append(
+        for attachment in doc.attachments:
+            if attachment.is_pdf:
+                block_type, media_type = "document", "application/pdf"
+            elif attachment.is_image and text_is_thin:
+                block_type, media_type = "image", attachment.media_type
+            else:
+                continue
+
+            encoded = base64.standard_b64encode(attachment.data).decode()
+            # The API caps a request at 32 MB and base64 inflates by 4/3, so a handful of
+            # large PDFs would 413. Stop well short rather than lose the whole email.
+            if encoded_total + len(encoded) > MAX_TOTAL_ENCODED_BYTES:
+                log.warning("skipping %s: attachment budget exhausted", attachment.filename)
+                continue
+            encoded_total += len(encoded)
+
+            media.append(
                 {
-                    "type": "document",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "application/pdf",
-                        "data": base64.standard_b64encode(attachment.data).decode(),
-                    },
+                    "type": block_type,
+                    "source": {"type": "base64", "media_type": media_type, "data": encoded},
                 }
             )
-        elif attachment.is_image and text_is_thin:
-            blocks.append(
-                {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": attachment.media_type,
-                        "data": base64.standard_b64encode(attachment.data).decode(),
-                    },
-                }
-            )
-    return blocks
+
+    return [*media, {"type": "text", "text": _render_email(doc, settings)}]
 
 
 def cache_key(doc: EmailDocument, settings: Settings) -> str:
-    """Hash everything that could change the answer, so replays are free."""
+    """Hash everything that could change the answer, so replays are free.
+
+    Attachments hash by content, not filename: two different tickets both called
+    ticket.pdf must not share a verdict. The prompt is hashed too, so editing the gate
+    invalidates every stale answer instead of silently preserving it.
+    """
     material = json.dumps(
         {
             "message_id": doc.message_id,
             "body": doc.body_text,
             "json_ld": doc.json_ld,
             "ics": doc.ics_events,
-            "attachments": sorted(a.filename for a in doc.attachments),
+            "attachments": sorted(hashlib.sha256(a.data).hexdigest() for a in doc.attachments),
+            "prompt": hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest(),
             "model": settings.anthropic_model,
             "effort": settings.anthropic_effort,
             "categories": [r.model_dump() for r in settings.categories],
@@ -178,12 +189,21 @@ class Extractor:
         settings = self._settings
         response = self._client.messages.parse(
             model=settings.anthropic_model,
-            max_tokens=8000,
+            # Thinking is on by default on Opus 5 and shares this budget with the answer,
+            # so a multi-leg itinerary at high effort needs real headroom here.
+            max_tokens=MAX_TOKENS,
             system=SYSTEM_PROMPT + _categories_block(settings),
             output_format=ExtractionResult,
             output_config={"effort": settings.anthropic_effort},
             messages=[{"role": "user", "content": _content_blocks(doc, settings)}],
         )
+        if response.stop_reason == "max_tokens":
+            raise RuntimeError(
+                f"extraction hit the {MAX_TOKENS} token ceiling before finishing; "
+                "lower ANTHROPIC_EFFORT or raise the ceiling"
+            )
+        if response.stop_reason == "refusal":
+            raise RuntimeError(f"model declined to process the email: {response.stop_details}")
         result = response.parsed_output
         if result is None:
             raise RuntimeError(f"model returned no parseable output (stop={response.stop_reason})")

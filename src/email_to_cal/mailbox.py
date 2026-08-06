@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import random
+import threading
 import time
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -21,6 +22,11 @@ from .config import Settings
 from .store import Store
 
 log = logging.getLogger(__name__)
+
+# How many times one message may fail before it is written off and skipped.
+MAX_ATTEMPTS = 3
+# IDLE is re-issued in slices this long so shutdown is not stuck behind a full cycle.
+IDLE_SLICE_SECONDS = 10.0
 
 
 class AuthenticationFatal(RuntimeError):
@@ -42,6 +48,7 @@ class Mailbox:
         self._settings = settings
         self._store = store
         self._box: MailBox | None = None
+        self._ack: tuple[int, str | None] | None = None
 
     # -- connection -----------------------------------------------------------------
 
@@ -133,11 +140,20 @@ class Mailbox:
 
     # -- fetching -------------------------------------------------------------------
 
-    def fetch_new(self, box: MailBox) -> Iterator[tuple[int, bytes]]:
-        """Yield (uid, raw_rfc822) for everything past the cursor, advancing as we go.
+    def ack(self, uid: int, *, error: str | None = None) -> None:
+        """Report the outcome of the message just yielded.
 
-        The cursor advances only after the consumer returns, so a message that raises is
-        retried on the next pass rather than lost.
+        Without this the cursor would advance on a message the consumer failed to handle,
+        which loses it silently: nothing retries it and nothing records that it existed.
+        """
+        self._ack = (uid, error)
+
+    def fetch_new(self, box: MailBox) -> Iterator[tuple[int, bytes]]:
+        """Yield (uid, raw_rfc822) for everything past the cursor.
+
+        The cursor advances only for messages the consumer acknowledges. A failure holds
+        the cursor so the next pass retries, and after MAX_ATTEMPTS the message is written
+        off to failed_messages and skipped so one poison email cannot stall the mailbox.
         """
         folder = self._settings.imap_folder
         uidvalidity = self._uidvalidity(box)
@@ -148,16 +164,52 @@ class Mailbox:
             uid = int(message.uid) if message.uid else 0
             if uid < start:
                 continue
+
+            self._ack = None
             yield uid, message.obj.as_bytes()
+
+            if self._ack is None or self._ack[0] != uid:
+                # The consumer never reported back — treat it as a failure, not a success.
+                log.error("UID %d was not acknowledged; holding the cursor", uid)
+                return
+
+            _, error = self._ack
+            if error is None:
+                self._store.clear_failure(folder, uidvalidity, uid)
+                self._store.set_cursor(folder, uidvalidity, uid)
+                continue
+
+            attempts = self._store.record_failure(folder, uidvalidity, uid, error)
+            if attempts < MAX_ATTEMPTS:
+                log.warning(
+                    "UID %d failed (attempt %d/%d); retrying next cycle: %s",
+                    uid,
+                    attempts,
+                    MAX_ATTEMPTS,
+                    error,
+                )
+                return
+
+            log.critical(
+                "giving up on UID %d after %d attempts; skipping it: %s", uid, attempts, error
+            )
             self._store.set_cursor(folder, uidvalidity, uid)
 
-    def idle(self, box: MailBox) -> bool:
-        """Wait for activity. Returns True if the server reported something."""
-        try:
-            responses = box.idle.wait(timeout=self._settings.imap_idle_seconds)
-        except TimeoutError:
-            return False
-        return bool(responses)
+    def idle(self, box: MailBox, stopping: threading.Event) -> bool:
+        """Wait for activity, in slices short enough that SIGTERM is honoured promptly.
+
+        A single long IDLE would not do: a Python signal handler that returns normally
+        makes the interrupted syscall resume with its remaining timeout (PEP 475), so a
+        five-minute wait would outlast Docker's ten-second stop grace and get SIGKILLed.
+        """
+        deadline = time.monotonic() + self._settings.imap_idle_seconds
+        while not stopping.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            if box.idle.wait(timeout=min(IDLE_SLICE_SECONDS, remaining)):
+                return True
+        return False
 
 
 def backoff_delay(attempt: int) -> float:
@@ -165,7 +217,8 @@ def backoff_delay(attempt: int) -> float:
     return float(min(2**attempt, 300)) + random.uniform(0, 5)
 
 
-def sleep_with_backoff(attempt: int) -> None:
+def sleep_with_backoff(attempt: int, stopping: threading.Event) -> None:
+    """Interruptible backoff, so a shutdown during a reconnect wait is immediate."""
     delay = backoff_delay(attempt)
     log.info("reconnecting in %.1fs", delay)
-    time.sleep(delay)
+    stopping.wait(delay)

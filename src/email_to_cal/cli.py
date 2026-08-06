@@ -59,6 +59,12 @@ def _cmd_check(settings: Settings, _args: argparse.Namespace) -> int:
     with Store(settings.state_db) as store:
         print(f"state db: {settings.state_db} ok")
 
+        failures = store.list_failures()
+        if failures:
+            print(f"failed messages: {len(failures)} (retry with 'replay', or investigate)")
+            for folder, _, uid, attempts, error in failures[:10]:
+                print(f"  {folder} UID {uid}: {attempts} attempts, {error[:120]}")
+
         try:
             mailbox = Mailbox(settings, store)
             box = mailbox.connect()

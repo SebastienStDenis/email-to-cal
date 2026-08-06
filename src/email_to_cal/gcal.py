@@ -28,11 +28,24 @@ log = logging.getLogger(__name__)
 # needs calendarList.list. See the README for the narrower calendar.app.created setup.
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
-_RETRYABLE_STATUS = {403, 429, 500, 502, 503, 504}
+_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+# Google overloads 403 for both throttling and permanent permission failures.
+_RETRYABLE_403_REASONS = {"rateLimitExceeded", "userRateLimitExceeded"}
 
 
 class CredentialsExpired(RuntimeError):
     """The refresh token is dead and only a human can fix it."""
+
+
+def _is_retryable(exc: HttpError) -> bool:
+    """A missing scope also arrives as 403; sleeping through five attempts hides it."""
+    status = exc.resp.status
+    if status in _RETRYABLE_STATUS:
+        return True
+    if status != 403:
+        return False
+    details = exc.error_details if isinstance(exc.error_details, list) else []
+    return any(isinstance(d, dict) and d.get("reason") in _RETRYABLE_403_REASONS for d in details)
 
 
 def load_credentials(settings: Settings) -> Credentials:
@@ -238,7 +251,7 @@ class CalendarClient:
                 return result
             except HttpError as exc:
                 status = exc.resp.status
-                if status not in _RETRYABLE_STATUS or attempt == attempts - 1:
+                if not _is_retryable(exc) or attempt == attempts - 1:
                     raise
                 delay = min(2**attempt, 32) + random.uniform(0, 1)
                 log.warning("Google API %s; retrying in %.1fs", status, delay)

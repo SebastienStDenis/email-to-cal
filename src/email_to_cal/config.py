@@ -33,17 +33,19 @@ class Settings(BaseSettings):
     imap_username: str = ""
     imap_password: str = ""
     imap_folder: str = "INBOX"
-    # iCloud drops long-lived idle sockets well before RFC 2177's 29-minute ceiling.
-    imap_idle_seconds: int = 300
-    first_run_lookback_days: int = 0
+    # iCloud drops long-lived idle sockets well before RFC 2177's 29-minute ceiling, and
+    # imap-tools refuses anything past it outright. Zero would spin the loop at full CPU.
+    imap_idle_seconds: int = Field(default=300, ge=10, le=1740)
+    first_run_lookback_days: int = Field(default=0, ge=0)
 
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-opus-5"
     anthropic_effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
     enable_vision: bool = True
     enable_web_search: bool = False
-    max_attachment_mb: float = 8.0
-    min_confidence: float = 0.75
+    # A negative value would make every attachment look oversized and silently vanish.
+    max_attachment_mb: float = Field(default=8.0, gt=0)
+    min_confidence: float = Field(default=0.75, ge=0.0, le=1.0)
 
     google_credentials_file: Path = Path("/data/credentials.json")
     google_token_file: Path = Path("/data/token.json")
@@ -77,7 +79,20 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _finalise_categories(self) -> Settings:
         if self.categories_file is not None:
-            loaded = yaml.safe_load(self.categories_file.read_text()) or []
+            # pydantic only turns ValueError into a ValidationError, so a typo'd path
+            # would otherwise reach the operator as a bare traceback.
+            try:
+                raw = self.categories_file.read_text()
+            except OSError as exc:
+                raise ValueError(
+                    f"cannot read CATEGORIES_FILE {self.categories_file}: {exc}"
+                ) from exc
+            loaded = yaml.safe_load(raw) or []
+            if not isinstance(loaded, list):
+                raise ValueError(
+                    f"CATEGORIES_FILE {self.categories_file} must contain a list of "
+                    f"{{name, description, calendar}} entries, got {type(loaded).__name__}"
+                )
             self.categories = [CategoryRule.model_validate(item) for item in loaded]
 
         seen: set[str] = set()

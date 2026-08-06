@@ -32,6 +32,16 @@ class StubExtractor:
         return None
 
 
+class FakeMailbox:
+    """Records the ack so a test can tell success from a swallowed failure."""
+
+    def __init__(self) -> None:
+        self.acks: list[tuple[int, str | None]] = []
+
+    def ack(self, uid: int, *, error: str | None = None) -> None:
+        self.acks.append((uid, error))
+
+
 class StubCalendar:
     def __init__(self) -> None:
         self.inserted: list[tuple[str, dict[str, Any]]] = []
@@ -261,7 +271,7 @@ def test_bad_api_key_stops_the_service_instead_of_dropping_mail(settings: Settin
     )
 
     with pytest.raises(AuthenticationFatal):
-        _process_one(pipeline, store, 1, fixture_bytes("concert_ics.eml"))
+        _process_one(pipeline, FakeMailbox(), store, 1, fixture_bytes("concert_ics.eml"))
     store.close()
 
 
@@ -278,7 +288,9 @@ def test_ordinary_failures_do_not_stop_the_service(settings: Settings) -> None:
         StubCalendar(),
     )
 
-    _process_one(pipeline, store, 1, fixture_bytes("concert_ics.eml"))  # must not raise
+    _process_one(
+        pipeline, FakeMailbox(), store, 1, fixture_bytes("concert_ics.eml")
+    )  # must not raise
     store.close()
 
 

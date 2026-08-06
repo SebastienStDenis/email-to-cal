@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import signal
+import threading
 import types
 from dataclasses import dataclass, field
 
@@ -152,12 +153,11 @@ class Pipeline:
 
 def run(settings: Settings) -> None:
     """Main loop: connect, catch up, idle, repeat. Survives everything but bad credentials."""
-    stopping = False
+    stopping = threading.Event()
 
     def _stop(signum: int, _frame: types.FrameType | None) -> None:
-        nonlocal stopping
         log.info("received signal %d; shutting down", signum)
-        stopping = True
+        stopping.set()
 
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
@@ -170,36 +170,43 @@ def run(settings: Settings) -> None:
         pipeline = Pipeline(settings, store, Extractor(settings), calendar)
         mailbox = Mailbox(settings, store)
         attempt = 0
+        store.beat()
 
-        while not stopping:
+        while not stopping.is_set():
             try:
                 box = mailbox.connect()
-                attempt = 0
-                while not stopping:
+                while not stopping.is_set():
                     for uid, raw in mailbox.fetch_new(box):
-                        _process_one(pipeline, store, uid, raw)
+                        _process_one(pipeline, mailbox, store, uid, raw)
+                        # Beat per message: a long backfill is healthy, not wedged.
+                        store.beat()
                     store.beat()
-                    mailbox.idle(box)
+                    # Only a completed cycle counts as progress. Resetting on connect
+                    # alone would pin the backoff at its first rung when the failure is
+                    # downstream of login, which is exactly the reconnect storm iCloud
+                    # punishes.
+                    attempt = 0
+                    mailbox.idle(box, stopping)
             except AuthenticationFatal:
                 log.critical("fatal authentication failure", exc_info=True)
                 raise
             except Exception:
                 log.warning("mailbox loop failed; will reconnect", exc_info=True)
                 mailbox.close()
-                if stopping:
+                if stopping.is_set():
                     break
-                sleep_with_backoff(attempt)
+                sleep_with_backoff(attempt, stopping)
                 attempt += 1
 
         mailbox.close()
         log.info("stopped cleanly")
 
 
-def _process_one(pipeline: Pipeline, store: Store, uid: int, raw: bytes) -> None:
-    """One email must never wedge the loop; the cursor advances either way.
+def _process_one(pipeline: Pipeline, mailbox: Mailbox, store: Store, uid: int, raw: bytes) -> None:
+    """Handle one email and tell the mailbox whether the cursor may move past it.
 
-    Credential failures are the exception: swallowing those would quietly discard every
-    message that arrives until someone notices, so they stop the service instead.
+    Credential failures are never swallowed: quietly skipping them would discard every
+    message that arrives until someone noticed, so they stop the service instead.
     """
     try:
         doc_id = pipeline.process(raw).message_id
@@ -210,8 +217,11 @@ def _process_one(pipeline: Pipeline, store: Store, uid: int, raw: bytes) -> None
     except CredentialsExpired:
         log.critical("Google credentials are no longer usable", exc_info=True)
         raise AuthenticationFatal("Google credentials are no longer usable") from None
-    except Exception:
+    except Exception as exc:
         log.error("failed to process UID %d", uid, exc_info=True)
+        mailbox.ack(uid, error=f"{type(exc).__name__}: {exc}")
+    else:
+        mailbox.ack(uid)
 
 
 def _bootstrap_calendars(settings: Settings, calendar: CalendarClient) -> None:
