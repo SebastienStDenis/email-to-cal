@@ -103,7 +103,7 @@ def test_connect_from_a_remote_hostname_explains_instead_of_calling_google(
     # The form was still saved before the redirect back.
     assert Settings().imap_username == "test@icloud.com"
 
-    follow = client.get("/settings")
+    follow = client.get("/settings", base_url="http://zoloft:8484")
     assert b"ssh -L 8484:localhost:8484 zoloft" in follow.data
 
 
