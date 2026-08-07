@@ -8,6 +8,7 @@ import random
 import time
 from datetime import datetime, timedelta
 from typing import Any
+from urllib.parse import quote
 
 from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
@@ -16,6 +17,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 from .config import Settings
+from .mime import SYNTHETIC_ID_DOMAIN
 from .schema import ExtractedEvent
 from .store import Store
 from .timezones import localise, parse_naive, resolve_zones
@@ -111,6 +113,17 @@ def event_id_for(message_id: str, event: ExtractedEvent) -> str:
     return hashlib.sha256(fingerprint.encode()).hexdigest()[:40]
 
 
+def mail_link(message_id: str) -> str | None:
+    """An Apple Mail deep link to the source message.
+
+    Google Calendar only linkifies http(s), so this renders as plain text there, but
+    Apple Calendar clients open Mail from it. Synthetic ids name no real message.
+    """
+    if message_id.endswith(f"@{SYNTHETIC_ID_DOMAIN}>"):
+        return None
+    return "message://" + quote(message_id, safe="@")
+
+
 def build_event_body(
     event: ExtractedEvent,
     settings: Settings,
@@ -179,6 +192,9 @@ def build_event_body(
     if event.booking_reference:
         description_lines.append(f"Booking reference: {event.booking_reference}")
     description_lines.append(f"Added by email-to-cal from {message_id}")
+    link = mail_link(message_id)
+    if link:
+        description_lines.append(f"Open in Apple Mail: {link}")
     body["description"] = "\n\n".join(description_lines)
 
     if event.location:

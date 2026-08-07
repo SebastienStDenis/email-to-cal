@@ -27,6 +27,8 @@ from .schema import Attachment, EmailDocument
 log = logging.getLogger(__name__)
 
 VISION_IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
+# Marks Message-IDs we invented ourselves; they name no message a mail client could open.
+SYNTHETIC_ID_DOMAIN = "email-to-cal.local"
 _RESERVATION_TYPES = {
     "FlightReservation",
     "EventReservation",
@@ -221,4 +223,4 @@ def _synthetic_id(raw: bytes) -> str:
     """Fall back to a content hash when a sender omits Message-ID."""
     import hashlib
 
-    return f"<sha256-{hashlib.sha256(raw).hexdigest()[:32]}@email-to-cal.local>"
+    return f"<sha256-{hashlib.sha256(raw).hexdigest()[:32]}@{SYNTHETIC_ID_DOMAIN}>"

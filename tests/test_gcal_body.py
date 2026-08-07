@@ -108,6 +108,16 @@ def test_source_message_is_recorded_for_later_reconciliation(settings: Settings)
     assert "K3TQ9P" in body["description"]
 
 
+def test_description_links_to_the_source_email(settings: Settings) -> None:
+    body = build_event_body(flight(), settings, message_id="<a@b>")
+    assert "Open in Apple Mail: message://%3Ca@b%3E" in body["description"]
+
+
+def test_synthetic_message_ids_get_no_mail_link(settings: Settings) -> None:
+    body = build_event_body(flight(), settings, message_id="<sha256-0f@email-to-cal.local>")
+    assert "message://" not in body["description"]
+
+
 def test_unresolvable_location_uses_the_configured_default(settings: Settings) -> None:
     event = ExtractedEvent(
         kind="appointment",
