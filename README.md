@@ -1,10 +1,10 @@
 # email-to-cal
 
 Watches an iCloud mailbox and turns the events you actually committed to into Google
-Calendar entries, routed to per-category calendars. Runs as a Docker container on your
-own server, configured entirely through environment variables.
+Calendar entries, routed to per-category calendars. Configured from a small web portal;
+runs from a checkout or as a Docker container.
 
-The point is not to find dates in email — that part is easy. The point is to only create
+The point is not to find dates in email - that part is easy. The point is to only create
 events you actually signed up for. "You've bought tickets for Radiohead" becomes a
 calendar entry. "Concerts near you this weekend" does not.
 
@@ -23,64 +23,23 @@ Extraction is tiered so the reliable sources win. Airlines and ticketing platfor
 [schema.org](https://schema.org/) JSON-LD in their HTML because Gmail and Outlook read it,
 which hands us exact flight numbers, airport codes, and times with no guessing. Failing
 that, a `.ics` attachment. Failing that, plain text, then rendered HTML, then PDFs and
-images passed to the model as vision input — which is how boarding passes and e-tickets
+images passed to the model as vision input - which is how boarding passes and e-tickets
 get read.
 
-Timezones are resolved deterministically wherever possible. Flights use an offline IATA
-airport database, so a Tokyo → Los Angeles flight gets `Asia/Tokyo` on the departure and
-`America/Los_Angeles` on the arrival, and renders correctly in both. Web search is
-available for venues that resolve no other way, but it is off by default because the
-deterministic paths cover almost everything.
+Timezones are resolved deterministically: an explicit zone in the email beats an offline
+IATA airport lookup, which beats a city match, which beats your configured default. A
+Tokyo → Los Angeles flight gets `Asia/Tokyo` on the departure and `America/Los_Angeles`
+on the arrival, and renders correctly in both.
 
 Re-delivering the same email is a no-op: every event gets a deterministic id derived from
 the message and the event's identity, so a duplicate insert is recognised and ignored
 rather than double-booking you.
 
-## Which folders it reads
+## Prerequisites
 
-`IMAP_FOLDER` (default `INBOX`) is the one folder that gets a live IDLE connection. That
-matters because of a race: if you read a booking confirmation on your phone and archive it
-before the service has seen it, the move deletes it from INBOX and gives it a fresh UID
-somewhere else, and it is gone as far as the watcher is concerned. The window is seconds in
-steady state and wide open during restarts and deploys.
+Whichever way you run it, you need three credentials. Have them ready before you start.
 
-`SWEEP_FOLDERS` closes it. Those folders get a catch-up pass every `SWEEP_INTERVAL_MINUTES`
-on the *same* connection — iCloud allows only about five per account and your phone and Mac
-already use some, so a second push connection is the wrong trade. New mail always lands in
-`IMAP_FOLDER` first, so a sweep is sufficient; swept folders never backfill, and anything
-already handled is skipped by Message-ID.
-
-```
-SWEEP_FOLDERS=Archive,Sent
-SWEEP_INTERVAL_MINUTES=15
-```
-
-## Running it
-
-The same `.env` works both ways. Paths default to `./data`, which is your checkout when you
-run the CLI and the mounted volume inside the container — so don't pin `STATE_DB` or the
-Google file paths to absolute container paths unless you mean to.
-
-Locally:
-
-```sh
-uv sync --all-groups
-mkdir -p data && cp credentials.json token.json data/
-uv run email-to-cal check
-```
-
-In Docker, the image deliberately does **not** contain your `.env` — it is excluded from the
-build so secrets never end up in a pushed image. Supply it at runtime. `docker compose` does
-this via `env_file: .env`; with bare `docker run` it is `--env-file`:
-
-```sh
-docker run --rm --env-file .env -v "$PWD/data:/app/data" \
-  ghcr.io/OWNER/email-to-cal:latest check
-```
-
-## Setup
-
-### 1. iCloud app-specific password
+### iCloud app-specific password
 
 Apple's 2FA blocks plain passwords for IMAP clients, so you need an app-specific one:
 [appleid.apple.com](https://appleid.apple.com) → Sign-In and Security → App-Specific
@@ -90,132 +49,190 @@ Passwords. Give this service its own so you can revoke it independently.
 > starts failing to authenticate, that is almost always why. It logs a clear message and
 > exits rather than hammering Apple with retries.
 
-### 2. Google Cloud project
+### Google OAuth client
 
-1. Create a project and enable the **Google Calendar API**.
-2. APIs & Services → Credentials → Create Credentials → **OAuth client ID** → **Desktop
-   app**. Download the JSON as `credentials.json`.
-3. **Set the OAuth app's publishing status to "In production."**
+A one-time, five-minute setup in the Google Cloud console. You come out of it with two
+strings: a client id and a client secret.
 
-Step 3 is not optional. An app left in **Testing** issues refresh tokens that expire after
-**7 days**, and the service will silently stop working every week. Publishing does *not*
-require Google's verification review — you will see a one-time "Google hasn't verified
-this app" screen (Advanced → Go to … ), and Google explicitly exempts apps used only by
-their author.
+1. At [console.cloud.google.com](https://console.cloud.google.com), create a project.
+2. **APIs & Services → Library** → enable the **Google Calendar API**.
+3. **APIs & Services → OAuth consent screen** (Google Auth Platform): set it up for
+   **External** users, then set the publishing status to **In production**.
+4. **APIs & Services → Credentials → Create Credentials → OAuth client ID → Desktop
+   app**. Copy the client id and client secret.
 
-### 3. Authorise
+Step 3 is not optional. An app left in **Testing** issues refresh tokens that expire
+after **7 days**, and the service will silently stop working every week. Publishing does
+*not* require Google's verification review - you will see a one-time "Google hasn't
+verified this app" screen (Advanced → Go to …), and Google explicitly exempts apps used
+only by their author.
 
-Run the consent flow once, on a machine with a browser:
+### Anthropic API key
+
+From [console.anthropic.com](https://console.anthropic.com). Extraction uses one model
+call per email, cached by content, so a personal mailbox costs very little.
+
+## Run it
 
 ```sh
-uv run email-to-cal auth-google --credentials ./credentials.json --token ./data/token.json
+git clone https://github.com/sebastienstdenis/email-to-cal
+cd email-to-cal
+uv sync --all-groups
+uv run email-to-cal serve
 ```
 
-Copy `credentials.json` and `token.json` into the `data/` directory on your server. The
-container refreshes and rewrites `token.json`, so the directory must be writable by uid
-`10001`.
+Open [http://127.0.0.1:8080](http://127.0.0.1:8080) and the portal takes it from there:
 
-### 4. Configure and run
+1. **Settings** - paste the three credentials from the prerequisites, name your
+   categories, save.
+2. **Connect Google Calendar** - one click through Google's consent screen. Do this from
+   a browser where the portal is reachable as `localhost`, because Google returns the
+   authorisation to a loopback address.
+3. **Status** - watch it work: watcher state, recent events, failures, and a "Run
+   checks" button that exercises IMAP, Anthropic, and Google end to end.
+
+New installs start in **dry run**: the service logs exactly what it would put on your
+calendar without writing anything. Watch a day of mail, tune the category descriptions,
+then switch dry run off in Settings.
+
+Everything lands in `data/` inside your checkout: the configuration (`config.json`),
+the Google token, and the state database. The other commands read the same
+configuration, so once set up you can also run it headless:
 
 ```sh
-cp .env.example .env          # then edit it
-cp docker-compose.example.yml docker-compose.yml
-mkdir -p data && cp credentials.json token.json data/
-chown -R 10001:10001 data     # the container refreshes token.json in place
+uv run email-to-cal check   # exercises IMAP, Anthropic, and Google, then exits
+uv run email-to-cal run     # the watcher without the portal
+```
+
+Environment variables override the saved configuration for one-offs:
+`LOG_LEVEL=DEBUG uv run email-to-cal run`.
+
+## Run it with Docker
+
+The published image, for keeping it running on a server. Create a `docker-compose.yml`:
+
+```yaml
+services:
+  email-to-cal:
+    image: ghcr.io/sebastienstdenis/email-to-cal:latest
+    container_name: email-to-cal
+    restart: unless-stopped
+    ports:
+      # The portal has no login, so keep it bound to localhost. On a remote server,
+      # reach it with: ssh -L 8080:localhost:8080 your-server
+      - "127.0.0.1:8080:8080"
+    volumes:
+      # Holds config.json, token.json, and state.sqlite. Back this up.
+      - data:/app/data
+
+volumes:
+  data:
+```
+
+Then:
+
+```sh
 docker compose up -d
 ```
 
-`.env.example` documents every setting. Verify everything before trusting it:
+Open [http://localhost:8080](http://localhost:8080) (through the SSH tunnel if the
+server is remote - Google's consent step needs the portal reachable as `localhost`) and
+configure exactly as above. Upgrade with `docker compose pull && docker compose up -d`.
+The equivalent bare `docker run`, if you don't use compose:
 
 ```sh
-docker compose run --rm email-to-cal check
+docker run -d --name email-to-cal --restart unless-stopped \
+  -p 127.0.0.1:8080:8080 -v email-to-cal-data:/app/data \
+  ghcr.io/sebastienstdenis/email-to-cal:latest
 ```
 
-That validates the config, logs into IMAP, reaches the Anthropic API, refreshes the Google
-token, and resolves or creates every configured calendar — then exits.
+## Which folders it reads
 
-**Leave `DRY_RUN=true` for the first day.** The service will log the exact Google Calendar
-payloads it would create without writing anything, which is the cheapest way to find out
-whether the gate and the category descriptions are tuned the way you want.
+The watched folder (default `INBOX`) gets a live IDLE connection. That matters because
+of a race: if you read a booking confirmation on your phone and archive it before the
+service has seen it, the move deletes it from INBOX and gives it a fresh UID somewhere
+else, and it is gone as far as the watcher is concerned. The window is seconds in steady
+state and wide open during restarts and deploys.
+
+Swept folders close it. They get a catch-up pass every sweep interval (default 15
+minutes) on the *same* connection - iCloud allows only about five connections per
+account and your phone and Mac already use some, so a second push connection is the
+wrong trade. New mail always lands in the watched folder first, so a sweep is
+sufficient; swept folders never backfill, and anything already handled is skipped by
+Message-ID.
 
 ## Categories
 
-`CATEGORIES` is a JSON array of `{name, description, calendar}` triples:
+Each category is a `(name, description, calendar)` row in the portal:
 
-```json
-[
-  {
-    "name": "travel",
-    "description": "Flights, trains, ferries, and hotel stays. Anything involving getting to or staying somewhere away from home.",
-    "calendar": "Sebastiens Travels"
-  },
-  {
-    "name": "music",
-    "description": "Concerts, gigs, festivals, and club nights the recipient has tickets for.",
-    "calendar": "Music"
-  }
-]
-```
+| Name | Description | Calendar |
+| --- | --- | --- |
+| travel | Flights, trains, ferries, and hotel stays. Anything involving getting to or staying somewhere away from home. | Sebastiens Travels |
+| music | Concerts, gigs, festivals, and club nights the recipient has tickets for. | Music |
 
-The `description` is what the model matches an event against, so write it for the model:
-say what belongs *and* what does not. Anything that matches no category goes to
-`DEFAULT_CALENDAR`. Calendars that do not exist yet are created on first run.
-
-If JSON in an environment variable offends you, set `CATEGORIES_FILE` to a mounted YAML
-file with the same shape instead.
+The description is what the model matches an event against, so write it for the model:
+say what belongs *and* what does not. Anything that matches no category goes to the
+default calendar. Calendars that do not exist yet are created on first run.
 
 ## Commands
 
+The container runs `serve` by default. The rest exist for the repo path and for
+debugging:
+
 | Command | What it does |
 | --- | --- |
-| `run` | Watch the mailbox and create events. The default. |
+| `serve` | The web portal plus the watcher. What the container runs. |
+| `run` | Watch the mailbox and create events, headless. |
 | `check` | Validate config and every external dependency, then exit. |
-| `auth-google` | Run the Google OAuth consent flow and write `token.json`. |
 | `replay FILE.eml` | Push one saved email through the real pipeline. Add `--dry-run`. |
-| `healthcheck` | Used by the container `HEALTHCHECK`; checks the loop heartbeat. |
+| `healthcheck` | Used by the container `HEALTHCHECK`. |
 
-`replay` is the tool for tuning. Save a message that was handled wrongly, run it, and read
-the model's `gate_reasoning`:
+`replay` is the tool for tuning. Save a message that was handled wrongly, run it, and
+read the model's `gate_reasoning`:
 
 ```sh
-docker compose run --rm email-to-cal replay /data/samples/weird.eml --dry-run
+uv run email-to-cal replay samples/weird.eml --dry-run
 ```
 
 ## Tuning the gate
 
 Two settings control how eager the service is:
 
-- `MIN_CONFIDENCE` (default `0.75`) — events below this are logged with the reason and
-  dropped. Raise it if you get junk, lower it if real bookings are being missed.
-- `ANTHROPIC_EFFORT` (default `medium`) — how hard the model thinks. `high` catches more
-  awkward emails at higher cost.
+- **Minimum confidence** (default `0.75`) - events below this are logged with the reason
+  and dropped. Raise it if you get junk, lower it if real bookings are being missed.
+- **Effort** (default `medium`) - how hard the model thinks. `high` catches more awkward
+  emails at higher cost.
 
-Model responses are cached in the state database keyed by content, so replays and restarts
-never re-bill you for the same email.
+Model responses are cached in the state database keyed by content, so replays and
+restarts never re-bill you for the same email.
 
 ## Operational notes
 
-- **One IMAP connection, always.** iCloud allows only a handful per account and shares that
-  budget with your phone and laptop. The service holds exactly one, cycling `IDLE` every
-  five minutes, and backs off exponentially if Apple pushes back.
-- **The mailbox is never modified.** Messages are fetched with `BODY.PEEK[]`, so nothing is
-  marked read, flagged, or moved. Processing state lives entirely in `/data/state.sqlite`.
-- **Back up `data/`.** It holds your Google token and the record of what has been
-  processed. Losing it means re-authorising and, depending on
-  `FIRST_RUN_LOOKBACK_DAYS`, potentially reprocessing mail — though the deterministic event
-  ids mean that still will not duplicate anything already in your calendar.
-- **A poison email cannot wedge the loop.** Failures are logged per-message and the cursor
-  advances.
+- **One IMAP connection, always.** iCloud allows only a handful per account and shares
+  that budget with your phone and laptop. The service holds exactly one, cycling `IDLE`
+  every five minutes, and backs off exponentially if Apple pushes back.
+- **The mailbox is never modified.** Messages are fetched with `BODY.PEEK[]`, so nothing
+  is marked read, flagged, or moved. Processing state lives entirely in
+  `data/state.sqlite`.
+- **Back up the data volume.** It holds your configuration, your Google token, and the
+  record of what has been processed. Losing it means reconfiguring and re-authorising -
+  though the deterministic event ids mean reprocessed mail still will not duplicate
+  anything already in your calendar.
+- **A poison email cannot wedge the loop.** Failures are logged per-message and the
+  cursor advances; written-off messages show up on the Status page.
+- **The portal has no authentication.** It holds your credentials, so publish its port
+  to localhost only (as the compose file above does) and use an SSH tunnel from
+  anywhere else.
 
 ## Scopes
 
-The service requests `https://www.googleapis.com/auth/calendar` because creating a missing
-calendar needs `calendars.insert` and routing needs `calendarList.list`.
+The service requests `https://www.googleapis.com/auth/calendar` because creating a
+missing calendar needs `calendars.insert` and routing needs `calendarList.list`.
 
 If you would rather it could never touch your existing calendars, swap `SCOPES` in
-`src/email_to_cal/gcal.py` for `https://www.googleapis.com/auth/calendar.app.created`, set
-`DEFAULT_CALENDAR` to a name that does not exist yet, and re-run `auth-google`. The service
-will then create and write to only its own calendars.
+`src/email_to_cal/gcal.py` for `https://www.googleapis.com/auth/calendar.app.created`,
+set the default calendar to a name that does not exist yet, and re-authorise. The
+service will then create and write to only its own calendars.
 
 ## Development
 
@@ -228,5 +245,5 @@ python tests/make_fixtures.py   # regenerate the .eml fixtures
 ```
 
 CI runs the same checks plus a Docker build. Pushes to `main` publish
-`ghcr.io/<owner>/email-to-cal:latest`; `v*` tags publish semver tags. Both are multi-arch
-(amd64 and arm64) and need no configured secrets.
+`ghcr.io/sebastienstdenis/email-to-cal:latest`; `v*` tags publish semver tags. Both are
+multi-arch (amd64 and arm64) and need no configured secrets.
