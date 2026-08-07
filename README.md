@@ -33,7 +33,10 @@ on the arrival, and renders correctly in both.
 
 Re-delivering the same email is a no-op: every event gets a deterministic id derived from
 the message and the event's identity, so a duplicate insert is recognised and ignored
-rather than double-booking you.
+rather than double-booking you. The same booking arriving in a *different* email - a
+reminder, an updated itinerary - is caught fuzzily instead: an event on the target
+calendar starting within an hour (configurable under Advanced settings) with a
+near-identical title or the same booking reference means nothing new is created.
 
 ## Prerequisites
 

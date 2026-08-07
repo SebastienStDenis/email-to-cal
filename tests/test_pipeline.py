@@ -40,9 +40,17 @@ class FakeMailbox:
 class StubCalendar:
     def __init__(self) -> None:
         self.inserted: list[tuple[str, dict[str, Any]]] = []
+        self.existing: dict[str, Any] | None = None
+        self.lookups: list[tuple[str, str | None]] = []
 
     def resolve_calendar(self, name: str, *, create_missing: bool = True) -> str:
         return f"id-of-{name.lower().replace(' ', '-')}"
+
+    def find_similar(
+        self, calendar_id: str, body: dict[str, Any], *, booking_reference: str | None = None
+    ) -> dict[str, Any] | None:
+        self.lookups.append((calendar_id, booking_reference))
+        return self.existing
 
     def insert(self, calendar_id: str, body: dict[str, Any]) -> str:
         self.inserted.append((calendar_id, body))
@@ -208,6 +216,39 @@ def test_already_seen_messages_short_circuit_before_the_model(settings: Settings
     replayed = pipeline.process(raw, skip_seen=False)
     assert replayed.committed
     assert replayed.reason == "Confirmed."
+    assert len(calendar.inserted) == 1
+    store.close()
+
+
+def test_a_similar_event_already_on_the_calendar_is_not_recreated(settings: Settings) -> None:
+    """A reminder email restates the booking under a new Message-ID; the calendar
+    lookup, not the deterministic id, is what stops the second copy."""
+    result = ExtractionResult(
+        is_committed=True, gate_reasoning="Confirmed.", events=[concert_event()]
+    )
+    pipeline, _, calendar, store = build(settings, result)
+    calendar.existing = {"id": "abc123", "summary": "Radiohead - The O2"}
+
+    outcome = pipeline.process(fixture_bytes("concert_ics.eml"))
+
+    assert calendar.inserted == []
+    assert outcome.skipped == [
+        ("Radiohead at The O2", "already on calendar as 'Radiohead - The O2'")
+    ]
+    store.close()
+
+
+def test_zero_dedup_window_skips_the_calendar_lookup(settings: Settings) -> None:
+    settings.dedup_window_minutes = 0
+    result = ExtractionResult(
+        is_committed=True, gate_reasoning="Confirmed.", events=[concert_event()]
+    )
+    pipeline, _, calendar, store = build(settings, result)
+    calendar.existing = {"id": "abc123", "summary": "Radiohead - The O2"}
+
+    pipeline.process(fixture_bytes("concert_ics.eml"))
+
+    assert calendar.lookups == []
     assert len(calendar.inserted) == 1
     store.close()
 

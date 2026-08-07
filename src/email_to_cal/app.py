@@ -124,6 +124,24 @@ class Pipeline:
             return
 
         calendar_id = self._calendar.resolve_calendar(calendar_name)
+
+        if settings.dedup_window_minutes:
+            twin = self._calendar.find_similar(
+                calendar_id, body, booking_reference=event.booking_reference
+            )
+            if twin is not None:
+                log.info(
+                    "skipping %r: %r (%s) already covers that slot on %r",
+                    event.title,
+                    twin.get("summary"),
+                    twin.get("id"),
+                    calendar_name,
+                )
+                outcome.skipped.append(
+                    (event.title, f"already on calendar as {twin.get('summary')!r}")
+                )
+                return
+
         event_id = self._calendar.insert(calendar_id, body)
         self._store.record_event(event_id, doc.message_id, calendar_id, event.title)
         log.info("created %r on %r (%s)", event.title, calendar_name, event_id)

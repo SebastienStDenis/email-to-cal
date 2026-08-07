@@ -49,6 +49,7 @@ FORM_FIELDS = [
     "enable_vision",
     "max_attachment_mb",
     "min_confidence",
+    "dedup_window_minutes",
     "google_client_id",
     "google_client_secret",
     "default_calendar",

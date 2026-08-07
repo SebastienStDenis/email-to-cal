@@ -6,7 +6,8 @@ import hashlib
 import logging
 import random
 import time
-from datetime import datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from difflib import SequenceMatcher
 from typing import Any
 from urllib.parse import quote
 
@@ -90,6 +91,28 @@ def save_token(settings: Settings, creds: Credentials) -> None:
     token_file.parent.mkdir(parents=True, exist_ok=True)
     token_file.write_text(creds.to_json())
     token_file.chmod(0o600)
+
+
+_TITLE_SIMILARITY = 0.75
+
+
+def _fold_title(title: str) -> str:
+    return " ".join("".join(c if c.isalnum() else " " for c in title.lower()).split())
+
+
+def titles_match(a: str, b: str) -> bool:
+    """Whether two titles plausibly name the same event.
+
+    Restatements keep most of the wording ("LX318 ZRH to LHR" vs "Flight LX318
+    ZRH-LHR"), so containment or a high similarity ratio after folding case and
+    punctuation is enough; the caller has already required the same time slot.
+    """
+    fa, fb = _fold_title(a), _fold_title(b)
+    if not fa or not fb:
+        return False
+    if fa in fb or fb in fa:
+        return True
+    return SequenceMatcher(None, fa, fb).ratio() >= _TITLE_SIMILARITY
 
 
 def event_id_for(message_id: str, event: ExtractedEvent) -> str:
@@ -248,6 +271,63 @@ class CalendarClient:
         log.info("created calendar %r (%s)", name, created["id"])
         self._store.set_calendar_id(name, created["id"])
         return str(created["id"])
+
+    def find_similar(
+        self, calendar_id: str, body: dict[str, Any], *, booking_reference: str | None = None
+    ) -> dict[str, Any] | None:
+        """An existing event this one would duplicate, or None.
+
+        Catches what the deterministic id cannot: the same booking arriving again in a
+        different email. A duplicate starts within the dedup window (all-day: the same
+        day) and either reads like the same title or carries the same booking reference.
+        """
+        window = timedelta(minutes=self._settings.dedup_window_minutes)
+        all_day = "date" in body["start"]
+        if all_day:
+            start_date = date.fromisoformat(body["start"]["date"])
+            midnight = datetime(start_date.year, start_date.month, start_date.day, tzinfo=UTC)
+            # A calendar-zone day never strays more than a day from the UTC one.
+            time_min, time_max = midnight - timedelta(days=1), midnight + timedelta(days=2)
+        else:
+            start = datetime.fromisoformat(body["start"]["dateTime"])
+            time_min, time_max = start - window, start + window
+
+        page_token: str | None = None
+        while True:
+            response = self._retry(
+                self._service.events().list(
+                    calendarId=calendar_id,
+                    timeMin=time_min.isoformat(),
+                    timeMax=time_max.isoformat(),
+                    singleEvents=True,
+                    pageToken=page_token,
+                )
+            )
+            items: list[dict[str, Any]] = response.get("items", [])
+            for item in items:
+                # The same id is this very email again; insert() already absorbs that.
+                if item.get("id") == body["id"] or item.get("status") == "cancelled":
+                    continue
+                item_start = item.get("start", {})
+                if all_day:
+                    if item_start.get("date") != body["start"]["date"]:
+                        continue
+                elif "dateTime" in item_start:
+                    item_dt = datetime.fromisoformat(item_start["dateTime"])
+                    if abs(item_dt - start) > window:
+                        continue
+                else:
+                    continue
+                if titles_match(item.get("summary", ""), body["summary"]):
+                    return item
+                if (
+                    booking_reference
+                    and booking_reference.lower() in item.get("description", "").lower()
+                ):
+                    return item
+            page_token = response.get("nextPageToken")
+            if not page_token:
+                return None
 
     def insert(self, calendar_id: str, body: dict[str, Any]) -> str:
         """Insert an event, treating an existing id as success."""
