@@ -114,9 +114,7 @@ def test_description_links_to_the_source_email(settings: Settings) -> None:
 
 
 def test_synthetic_message_ids_get_no_mail_link(settings: Settings) -> None:
-    body = build_event_body(
-        flight(), settings, message_id="<sha256-0f@email-to-cal.local>"
-    )
+    body = build_event_body(flight(), settings, message_id="<sha256-0f@email-to-cal.local>")
     assert "message://" not in body["description"]
 
 
