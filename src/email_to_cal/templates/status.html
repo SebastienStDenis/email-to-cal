@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block content %}
+
+<section class="card">
+  <h2>Watcher
+    {% if running %}<span class="pill ok">running</span>
+    {% elif missing %}<span class="pill warn">waiting for configuration</span>
+    {% else %}<span class="pill bad">stopped</span>{% endif %}
+    {% if dry_run %}<span class="pill warn">dry run</span>{% endif %}
+  </h2>
+  {% if missing %}
+  <p class="hint">Still needed: {{ missing | join(', ') }} &mdash;
+    <a href="{{ url_for('settings_page') }}">finish setup</a>.</p>
+  {% elif error %}
+  <p class="hint">Stopped on an error: {{ error }}</p>
+  {% else %}
+  <p class="hint">Last heartbeat: {{ beat_age | ago }}. The watcher heartbeats at least
+    once per IDLE cycle.</p>
+  {% endif %}
+  <div class="actions">
+    <form method="post" action="{{ url_for('restart') }}">
+      <button class="small">Restart watcher</button>
+    </form>
+    <form method="post" action="{{ url_for('check') }}">
+      <button class="small">Run checks</button>
+    </form>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Recent events</h2>
+  {% if events %}
+  <table>
+    <tr><th>Event</th><th>Calendar</th><th>Created</th></tr>
+    {% for summary, calendar_id, age in events %}
+    <tr>
+      <td>{{ summary or '(untitled)' }}</td>
+      <td class="muted">{{ calendar_id }}</td>
+      <td class="muted">{{ age | ago }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="hint">Nothing created yet. With dry run on, would-be events appear in the
+    container logs instead.</p>
+  {% endif %}
+</section>
+
+{% if failures %}
+<section class="card">
+  <h2>Failed messages</h2>
+  <p class="hint">These were retried and written off; the watcher moved on. Investigate
+    with the <code>replay</code> command.</p>
+  <table>
+    <tr><th>Folder</th><th>UID</th><th>Attempts</th><th>Last error</th></tr>
+    {% for folder, uidvalidity, uid, attempts, error in failures %}
+    <tr>
+      <td>{{ folder }}</td>
+      <td>{{ uid }}</td>
+      <td>{{ attempts }}</td>
+      <td class="muted">{{ error[:160] }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</section>
+{% endif %}
+
+{% endblock %}

@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS emitted_events (
     event_id     TEXT PRIMARY KEY,
     message_id   TEXT NOT NULL,
     calendar_id  TEXT NOT NULL,
+    summary      TEXT NOT NULL DEFAULT '',
     created_at   REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS failed_messages (
@@ -58,6 +59,13 @@ class Store:
         self._conn = sqlite3.connect(path, isolation_level=None)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
+        # CREATE TABLE IF NOT EXISTS never alters an existing table, so columns added
+        # since a database was first created have to be patched in here.
+        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(emitted_events)")}
+        if "summary" not in columns:
+            self._conn.execute(
+                "ALTER TABLE emitted_events ADD COLUMN summary TEXT NOT NULL DEFAULT ''"
+            )
 
     def __enter__(self) -> Store:
         return self
@@ -105,11 +113,13 @@ class Store:
 
     # -- emitted events -------------------------------------------------------------
 
-    def record_event(self, event_id: str, message_id: str, calendar_id: str) -> None:
+    def record_event(
+        self, event_id: str, message_id: str, calendar_id: str, summary: str = ""
+    ) -> None:
         self._conn.execute(
-            "INSERT OR IGNORE INTO emitted_events (event_id, message_id, calendar_id, created_at) "
-            "VALUES (?, ?, ?, ?)",
-            (event_id, message_id, calendar_id, time.time()),
+            "INSERT OR IGNORE INTO emitted_events "
+            "(event_id, message_id, calendar_id, summary, created_at) VALUES (?, ?, ?, ?, ?)",
+            (event_id, message_id, calendar_id, summary, time.time()),
         )
 
     def has_event(self, event_id: str) -> bool:
@@ -117,6 +127,14 @@ class Store:
             "SELECT 1 FROM emitted_events WHERE event_id = ?", (event_id,)
         ).fetchone()
         return row is not None
+
+    def recent_events(self, limit: int = 20) -> list[tuple[str, str, float]]:
+        rows = self._conn.execute(
+            "SELECT summary, calendar_id, created_at FROM emitted_events "
+            "ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [(r[0], r[1], r[2]) for r in rows]
 
     # -- failures -------------------------------------------------------------------
 

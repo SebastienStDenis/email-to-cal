@@ -21,15 +21,10 @@ class StubExtractor:
     def __init__(self, result: ExtractionResult) -> None:
         self.result = result
         self.calls = 0
-        self.timezone_lookups: list[str] = []
 
     def extract(self, doc: EmailDocument) -> ExtractionResult:
         self.calls += 1
         return self.result
-
-    def lookup_timezone(self, location: str) -> str | None:
-        self.timezone_lookups.append(location)
-        return None
 
 
 class FakeMailbox:
@@ -231,26 +226,6 @@ def test_dry_run_writes_nothing(settings: Settings) -> None:
     store.close()
 
 
-def test_web_lookup_only_fires_when_local_resolution_fails(settings: Settings) -> None:
-    settings.enable_web_search = True
-    unresolvable = concert_event()
-    unresolvable.location = "Klubben Bakgården"
-    result = ExtractionResult(is_committed=True, gate_reasoning="Confirmed.", events=[unresolvable])
-    pipeline, extractor, _, store = build(settings, result)
-    pipeline.process(fixture_bytes("concert_ics.eml"))
-    assert extractor.timezone_lookups == ["Klubben Bakgården"]
-
-    resolvable = concert_event()  # location contains "London"
-    pipeline2, extractor2, _, store2 = build(
-        settings, ExtractionResult(is_committed=True, gate_reasoning="ok", events=[resolvable])
-    )
-    pipeline2.process(fixture_bytes("restaurant_plain.eml"))
-    assert extractor2.timezone_lookups == []
-
-    store.close()
-    store2.close()
-
-
 def test_bad_api_key_stops_the_service_instead_of_dropping_mail(settings: Settings) -> None:
     """A per-message catch would silently bin every email until someone noticed."""
 
@@ -296,7 +271,6 @@ def test_ordinary_failures_do_not_stop_the_service(settings: Settings) -> None:
 
 def test_calendar_routing_is_case_insensitive() -> None:
     settings = Settings(
-        _env_file=None,
         categories=[
             CategoryRule(name="Travel", description="Flights.", calendar="Sebastiens Travels")
         ],

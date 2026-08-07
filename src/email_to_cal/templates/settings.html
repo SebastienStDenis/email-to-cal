@@ -1,0 +1,241 @@
+{% extends "base.html" %}
+{% block content %}
+
+{% if missing %}
+<section class="card">
+  <h2>Almost there</h2>
+  <p class="hint">Still needed before the watcher can start: {{ missing | join(', ') }}.</p>
+</section>
+{% endif %}
+
+{% if errors %}
+<ul class="errors">{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul>
+{% endif %}
+
+<form method="post" action="{{ url_for('settings_save') }}">
+  <section class="card">
+    <h2>iCloud Mail</h2>
+    <div class="grid">
+      <div>
+        <label for="imap_username">Apple ID email</label>
+        <input type="text" id="imap_username" name="imap_username"
+               value="{{ values.imap_username }}" placeholder="you@icloud.com">
+      </div>
+      <div>
+        <label for="imap_password">App-specific password</label>
+        <input type="password" id="imap_password" name="imap_password"
+               value="{{ values.imap_password }}" placeholder="xxxx-xxxx-xxxx-xxxx">
+        <p class="hint">Not your Apple ID password. Create one at
+          appleid.apple.com &rarr; Sign-In and Security &rarr; App-Specific Passwords.</p>
+      </div>
+      <div>
+        <label for="imap_folder">Watched folder</label>
+        <input type="text" id="imap_folder" name="imap_folder" value="{{ values.imap_folder }}">
+        <p class="hint">Gets a live push connection; new mail lands here first.</p>
+      </div>
+      <div>
+        <label for="sweep_folders">Swept folders</label>
+        <input type="text" id="sweep_folders" name="sweep_folders"
+               value="{{ values.sweep_folders }}" placeholder="Archive, Deleted Messages">
+        <p class="hint">Comma separated; folder names may contain spaces. Checked
+          periodically so mail you archive from your phone before the service sees it
+          is not lost.</p>
+      </div>
+    </div>
+    <details>
+      <summary>Advanced</summary>
+      <div class="grid">
+        <div>
+          <label for="imap_host">IMAP host</label>
+          <input type="text" id="imap_host" name="imap_host" value="{{ values.imap_host }}">
+        </div>
+        <div>
+          <label for="imap_port">IMAP port</label>
+          <input type="number" id="imap_port" name="imap_port" value="{{ values.imap_port }}">
+        </div>
+        <div>
+          <label for="imap_idle_seconds">IDLE cycle (seconds)</label>
+          <input type="number" id="imap_idle_seconds" name="imap_idle_seconds"
+                 value="{{ values.imap_idle_seconds }}">
+        </div>
+        <div>
+          <label for="sweep_interval_minutes">Sweep interval (minutes)</label>
+          <input type="number" id="sweep_interval_minutes" name="sweep_interval_minutes"
+                 value="{{ values.sweep_interval_minutes }}">
+        </div>
+        <div>
+          <label for="first_run_lookback_days">First-run lookback (days)</label>
+          <input type="number" id="first_run_lookback_days" name="first_run_lookback_days"
+                 value="{{ values.first_run_lookback_days }}">
+          <p class="hint">0 processes only mail that arrives from now on.</p>
+        </div>
+      </div>
+    </details>
+  </section>
+
+  <section class="card">
+    <h2>Anthropic</h2>
+    <div class="grid">
+      <div>
+        <label for="anthropic_api_key">API key</label>
+        <input type="password" id="anthropic_api_key" name="anthropic_api_key"
+               value="{{ values.anthropic_api_key }}" placeholder="sk-ant-...">
+      </div>
+      <div>
+        <label for="min_confidence">Minimum confidence</label>
+        <input type="text" id="min_confidence" name="min_confidence"
+               value="{{ values.min_confidence }}">
+        <p class="hint">Events below this are logged and dropped. Raise it if you get
+          junk, lower it if real bookings are missed.</p>
+      </div>
+    </div>
+    <details>
+      <summary>Advanced</summary>
+      <div class="grid">
+        <div>
+          <label for="anthropic_model">Model</label>
+          <input type="text" id="anthropic_model" name="anthropic_model"
+                 value="{{ values.anthropic_model }}">
+        </div>
+        <div>
+          <label for="anthropic_effort">Effort</label>
+          <select id="anthropic_effort" name="anthropic_effort">
+            {% for effort in ['low', 'medium', 'high', 'xhigh', 'max'] %}
+            <option value="{{ effort }}"
+                    {% if values.anthropic_effort == effort %}selected{% endif %}>
+              {{ effort }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label for="max_attachment_mb">Max attachment (MB)</label>
+          <input type="text" id="max_attachment_mb" name="max_attachment_mb"
+                 value="{{ values.max_attachment_mb }}">
+        </div>
+        <div class="checkbox" style="align-self: end;">
+          <input type="checkbox" id="enable_vision" name="enable_vision"
+                 {% if values.enable_vision %}checked{% endif %}>
+          <label for="enable_vision">Read PDFs and images (boarding passes, e-tickets)</label>
+        </div>
+      </div>
+    </details>
+  </section>
+
+  <section class="card">
+    <h2>Google Calendar
+      {% if google_connected %}<span class="pill ok">connected</span>
+      {% else %}<span class="pill warn">not connected</span>{% endif %}
+    </h2>
+    <div class="grid">
+      <div>
+        <label for="google_client_id">OAuth client id</label>
+        <input type="text" id="google_client_id" name="google_client_id"
+               value="{{ values.google_client_id }}"
+               placeholder="xxxx.apps.googleusercontent.com">
+      </div>
+      <div>
+        <label for="google_client_secret">OAuth client secret</label>
+        <input type="password" id="google_client_secret" name="google_client_secret"
+               value="{{ values.google_client_secret }}" placeholder="GOCSPX-...">
+      </div>
+    </div>
+    <p class="hint">From your Google Cloud project's Desktop-app OAuth client; the README
+      walks through the one-time setup. Save first, then connect. Connecting opens
+      Google's consent screen and needs this page to be open as
+      <strong>localhost</strong> (use an SSH tunnel for a remote server).</p>
+    <div class="actions">
+      <button form="google-connect" class="small">
+        {% if google_connected %}Reconnect Google Calendar{% else %}Connect Google Calendar{% endif %}
+      </button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Calendars &amp; categories</h2>
+    <div class="grid">
+      <div>
+        <label for="default_calendar">Default calendar</label>
+        <input type="text" id="default_calendar" name="default_calendar"
+               value="{{ values.default_calendar }}">
+        <p class="hint">Where anything that matches no category goes. "primary" is your
+          main calendar.</p>
+      </div>
+      <div>
+        <label for="default_timezone">Default timezone</label>
+        <input type="text" id="default_timezone" name="default_timezone"
+               value="{{ values.default_timezone }}" placeholder="Europe/Zurich"
+               list="timezones" autocomplete="off">
+        <datalist id="timezones">
+          {% for zone in timezones %}<option value="{{ zone }}">{% endfor %}
+        </datalist>
+        <p class="hint">An IANA name like Europe/Zurich or America/New_York; start
+          typing for suggestions. Used when an email gives a time but no resolvable
+          place.</p>
+      </div>
+    </div>
+    <p class="hint" style="margin-top: 1rem;">Each category routes matching events to its
+      own calendar; calendars that do not exist yet are created on first run. The
+      description is what the model matches against, so say what belongs and what does
+      not.</p>
+    <div id="categories" style="margin-top: .8rem;">
+      {% for category in values.categories %}
+      <div class="category-row">
+        <input type="text" name="category_name" value="{{ category.name }}" placeholder="Name">
+        <input type="text" name="category_description" value="{{ category.description }}"
+               placeholder="What belongs here, written for the model">
+        <input type="text" name="category_calendar" value="{{ category.calendar }}"
+               placeholder="Calendar">
+        <button type="button" class="small" onclick="this.parentElement.remove()">Remove</button>
+      </div>
+      {% endfor %}
+    </div>
+    <button type="button" class="small" id="add-category">Add category</button>
+  </section>
+
+  <section class="card">
+    <h2>Service</h2>
+    <div class="grid">
+      <div class="checkbox">
+        <input type="checkbox" id="dry_run" name="dry_run"
+               {% if values.dry_run %}checked{% endif %}>
+        <label for="dry_run">Dry run: log what would be created, write nothing</label>
+      </div>
+      <div>
+        <label for="log_level">Log level</label>
+        <select id="log_level" name="log_level">
+          {% for level in ['DEBUG', 'INFO', 'WARNING', 'ERROR'] %}
+          <option value="{{ level }}"
+                  {% if values.log_level | upper == level %}selected{% endif %}>
+            {{ level }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+    <p class="hint">Leave dry run on for the first day and read the logs; it is the
+      cheapest way to tune the categories before anything touches your calendar.</p>
+  </section>
+
+  <div class="actions">
+    <button type="submit" class="primary">Save settings</button>
+  </div>
+</form>
+
+<form id="google-connect" method="post" action="{{ url_for('google_connect') }}"></form>
+
+<template id="category-template">
+  <div class="category-row">
+    <input type="text" name="category_name" placeholder="Name">
+    <input type="text" name="category_description"
+           placeholder="What belongs here, written for the model">
+    <input type="text" name="category_calendar" placeholder="Calendar">
+    <button type="button" class="small" onclick="this.parentElement.remove()">Remove</button>
+  </div>
+</template>
+<script>
+  document.getElementById('add-category').addEventListener('click', () => {
+    const template = document.getElementById('category-template');
+    document.getElementById('categories').append(template.content.cloneNode(true));
+  });
+</script>
+
+{% endblock %}

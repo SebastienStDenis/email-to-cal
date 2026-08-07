@@ -5,16 +5,23 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import signal
 import sys
+import threading
 import time
+import types
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from .app import Pipeline, run
+from .checks import run_checks
 from .config import Settings
-from .gcal import CalendarClient, CredentialsExpired, run_consent_flow
+from .gcal import CalendarClient
 from .llm import Extractor
-from .mailbox import Mailbox
 from .store import Store
+
+log = logging.getLogger(__name__)
 
 
 def _configure_logging(level: str) -> None:
@@ -24,78 +31,59 @@ def _configure_logging(level: str) -> None:
     )
 
 
+def _stop_on_signals(stopping: threading.Event) -> None:
+    def _stop(signum: int, _frame: types.FrameType | None) -> None:
+        log.info("received signal %d; shutting down", signum)
+        stopping.set()
+
+    signal.signal(signal.SIGTERM, _stop)
+    signal.signal(signal.SIGINT, _stop)
+
+
 def _cmd_run(settings: Settings, _args: argparse.Namespace) -> int:
-    run(settings)
+    stopping = threading.Event()
+    _stop_on_signals(stopping)
+    run(settings, stopping)
     return 0
 
 
-def _cmd_auth_google(settings: Settings, args: argparse.Namespace) -> int:
-    credentials = Path(args.credentials or settings.google_credentials_file)
-    token = Path(args.token or settings.google_token_file)
-    if not credentials.exists():
-        print(f"missing OAuth client file: {credentials}", file=sys.stderr)
-        print(
-            "Download it from the Google Cloud console (APIs & Services > Credentials >\n"
-            "OAuth client ID > Desktop app), and make sure the app's publishing status is\n"
-            "'In production' or the refresh token will expire after 7 days.",
-            file=sys.stderr,
-        )
-        return 1
-    run_consent_flow(credentials, token, port=args.port)
-    print(f"wrote {token}")
+def _cmd_serve(_settings: Settings, args: argparse.Namespace) -> int:
+    """The portal plus a supervised watcher thread; how the container runs."""
+    from .web import Supervisor, create_app
+
+    supervisor = Supervisor()
+    supervisor.restart()
+
+    def _stop(signum: int, _frame: types.FrameType | None) -> None:
+        log.info("received signal %d; shutting down", signum)
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, _stop)
+    signal.signal(signal.SIGINT, _stop)
+
+    log.info("portal listening on http://%s:%d", args.host, args.port)
+    try:
+        create_app(supervisor).run(host=args.host, port=args.port, threaded=True)
+    finally:
+        supervisor.stop()
     return 0
 
 
 def _cmd_check(settings: Settings, _args: argparse.Namespace) -> int:
     """Validate every external dependency, then exit. Safe to run against production."""
-    ok = True
-
     print(f"categories: {len(settings.categories)} configured")
     for rule in settings.categories:
         print(f"  {rule.name} -> {rule.calendar}")
     print(f"default calendar: {settings.default_calendar}")
     print(f"default timezone: {settings.default_timezone}")
 
-    with Store(settings.state_db) as store:
-        print(f"state db: {settings.state_db} ok")
-
-        failures = store.list_failures()
-        if failures:
-            print(f"failed messages: {len(failures)} (retry with 'replay', or investigate)")
-            for folder, _, uid, attempts, error in failures[:10]:
-                print(f"  {folder} UID {uid}: {attempts} attempts, {error[:120]}")
-
-        try:
-            mailbox = Mailbox(settings, store)
-            box = mailbox.connect()
-            print(f"imap: connected, {len(box.uids())} messages in {settings.imap_folder}")
-            mailbox.close()
-        except Exception as exc:
-            print(f"imap: FAILED - {exc}", file=sys.stderr)
+    ok = True
+    for result in run_checks(settings):
+        if result.ok:
+            print(f"{result.name}: {result.detail}")
+        else:
+            print(f"{result.name}: FAILED - {result.detail}", file=sys.stderr)
             ok = False
-
-        try:
-            import anthropic
-
-            client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-            client.models.retrieve(settings.anthropic_model)
-            print(f"anthropic: {settings.anthropic_model} reachable")
-        except Exception as exc:
-            print(f"anthropic: FAILED - {exc}", file=sys.stderr)
-            ok = False
-
-        try:
-            calendar = CalendarClient(settings, store)
-            wanted = {settings.default_calendar} | {r.calendar for r in settings.categories}
-            for name in sorted(wanted):
-                print(f"calendar {name!r} -> {calendar.resolve_calendar(name)}")
-        except CredentialsExpired as exc:
-            print(f"google: FAILED - {exc}", file=sys.stderr)
-            ok = False
-        except Exception as exc:
-            print(f"google: FAILED - {exc}", file=sys.stderr)
-            ok = False
-
     return 0 if ok else 1
 
 
@@ -127,7 +115,22 @@ def _cmd_replay(settings: Settings, args: argparse.Namespace) -> int:
 
 
 def _cmd_healthcheck(settings: Settings, args: argparse.Namespace) -> int:
-    """Used by the container HEALTHCHECK: has the loop beaten recently?"""
+    """Used by the container HEALTHCHECK.
+
+    `serve` mode answers via the portal's /healthz, which also covers the
+    waiting-for-configuration state. When no portal is listening (headless `run`
+    deployments), fall back to reading the heartbeat directly.
+    """
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{args.port}/healthz", timeout=5) as reply:
+            print(reply.read().decode().strip())
+            return 0
+    except urllib.error.HTTPError as exc:
+        print(exc.read().decode().strip() or str(exc), file=sys.stderr)
+        return 1
+    except OSError:
+        pass
+
     with Store(settings.state_db) as store:
         beat = store.last_beat()
     if beat is None:
@@ -147,11 +150,10 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("run", help="watch the mailbox and create events").set_defaults(func=_cmd_run)
 
-    auth = sub.add_parser("auth-google", help="run the Google OAuth consent flow")
-    auth.add_argument("--credentials", help="path to the OAuth client JSON")
-    auth.add_argument("--token", help="where to write the token JSON")
-    auth.add_argument("--port", type=int, default=0, help="loopback port (0 picks one)")
-    auth.set_defaults(func=_cmd_auth_google)
+    serve = sub.add_parser("serve", help="run the web portal plus the watcher")
+    serve.add_argument("--host", default="127.0.0.1", help="bind address")
+    serve.add_argument("--port", type=int, default=8080)
+    serve.set_defaults(func=_cmd_serve)
 
     sub.add_parser("check", help="validate config and every external dependency").set_defaults(
         func=_cmd_check
@@ -162,7 +164,8 @@ def main(argv: list[str] | None = None) -> int:
     replay.add_argument("--dry-run", action="store_true", help="never write to Google Calendar")
     replay.set_defaults(func=_cmd_replay)
 
-    health = sub.add_parser("healthcheck", help="check the loop heartbeat")
+    health = sub.add_parser("healthcheck", help="check the portal, falling back to the heartbeat")
+    health.add_argument("--port", type=int, default=8080, help="portal port to probe")
     health.add_argument("--max-age", type=float, default=900.0)
     health.set_defaults(func=_cmd_healthcheck)
 

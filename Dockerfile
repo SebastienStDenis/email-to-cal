@@ -23,11 +23,14 @@ ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1
 USER app
 WORKDIR /app
 # Mounted at /app/data rather than /data so the default relative paths resolve the same
-# way here as they do on a developer's machine, and one .env serves both.
+# way here as they do on a developer's machine, and one configuration serves both.
 VOLUME ["/app/data"]
 
+EXPOSE 8080
 HEALTHCHECK --interval=5m --timeout=10s --start-period=2m --retries=3 \
     CMD email-to-cal healthcheck || exit 1
 
 ENTRYPOINT ["email-to-cal"]
-CMD ["run"]
+# The portal configures everything from the browser; bind all interfaces inside the
+# container and let the published port decide who can reach it.
+CMD ["serve", "--host", "0.0.0.0"]

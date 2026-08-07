@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>email-to-cal</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #1a1d21; --muted: #667085;
+    --line: #e4e7ec; --accent: #2563eb; --ok: #027a48; --ok-bg: #ecfdf3;
+    --bad: #b42318; --bad-bg: #fef3f2; --warn: #b54708; --warn-bg: #fffaeb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #101418; --card: #171c22; --text: #e6e9ec; --muted: #98a2b3;
+      --line: #2a323c; --accent: #60a5fa; --ok: #75e0a7; --ok-bg: #10281c;
+      --bad: #f97066; --bad-bg: #2d1512; --warn: #fdb022; --warn-bg: #2b2010;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 1.5rem;
+    max-width: 60rem; margin: 0 auto; padding: 1.2rem 1.5rem 0;
+  }
+  header h1 { font-size: 1.1rem; margin: 0; }
+  header nav { display: flex; gap: 1rem; }
+  header a { color: var(--muted); text-decoration: none; }
+  header a.active, header a:hover { color: var(--text); }
+  main { max-width: 60rem; margin: 0 auto; padding: 1rem 1.5rem 3rem; }
+  section.card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    padding: 1.1rem 1.3rem; margin-top: 1rem;
+  }
+  section.card h2 { font-size: 1rem; margin: 0 0 .8rem; }
+  .hint { color: var(--muted); font-size: .85rem; margin: .2rem 0 0; }
+  label { display: block; font-size: .85rem; font-weight: 550; margin-bottom: .25rem; }
+  input[type=text], input[type=password], input[type=number], select {
+    width: 100%; padding: .45rem .6rem; border: 1px solid var(--line); border-radius: 7px;
+    background: var(--bg); color: var(--text); font: inherit;
+  }
+  input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .grid { display: grid; gap: .9rem 1rem; grid-template-columns: repeat(2, 1fr); }
+  .grid .wide { grid-column: 1 / -1; }
+  @media (max-width: 40rem) { .grid { grid-template-columns: 1fr; } }
+  .checkbox { display: flex; align-items: center; gap: .5rem; }
+  .checkbox label { margin: 0; }
+  button {
+    font: inherit; font-weight: 550; padding: .5rem 1rem; border-radius: 7px;
+    border: 1px solid var(--line); background: var(--card); color: var(--text); cursor: pointer;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.small { padding: .25rem .6rem; font-size: .85rem; }
+  .actions { margin-top: 1.2rem; display: flex; gap: .8rem; align-items: center; }
+  .pill {
+    display: inline-block; padding: .1rem .6rem; border-radius: 99px;
+    font-size: .8rem; font-weight: 600;
+  }
+  .pill.ok { color: var(--ok); background: var(--ok-bg); }
+  .pill.bad { color: var(--bad); background: var(--bad-bg); }
+  .pill.warn { color: var(--warn); background: var(--warn-bg); }
+  ul.flash { list-style: none; padding: 0; margin: 1rem 0 0; }
+  ul.flash li {
+    background: var(--ok-bg); color: var(--ok); border-radius: 8px;
+    padding: .6rem .9rem; margin-bottom: .4rem; font-weight: 550;
+  }
+  ul.errors { color: var(--bad); background: var(--bad-bg); border-radius: 8px;
+    padding: .8rem .9rem .8rem 2rem; margin: 1rem 0 0; }
+  table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+  th, td { text-align: left; padding: .45rem .5rem; border-top: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 550; border-top: none; }
+  td.muted, span.muted { color: var(--muted); }
+  details { margin-top: 1rem; }
+  summary { cursor: pointer; color: var(--muted); font-size: .9rem; }
+  details .grid { margin-top: .9rem; }
+  .category-row {
+    display: grid; grid-template-columns: 9rem 1fr 9rem auto; gap: .5rem;
+    margin-bottom: .5rem; align-items: start;
+  }
+  @media (max-width: 40rem) { .category-row { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>email-to-cal</h1>
+  <nav>
+    <a href="{{ url_for('status_page') }}"
+       {% if request.endpoint == 'status_page' %}class="active"{% endif %}>Status</a>
+    <a href="{{ url_for('settings_page') }}"
+       {% if request.endpoint == 'settings_page' %}class="active"{% endif %}>Settings</a>
+  </nav>
+</header>
+<main>
+  {% with messages = get_flashed_messages() %}
+    {% if messages %}
+      <ul class="flash">{% for message in messages %}<li>{{ message }}</li>{% endfor %}</ul>
+    {% endif %}
+  {% endwith %}
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>

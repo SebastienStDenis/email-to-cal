@@ -10,30 +10,15 @@ from email_to_cal.config import Settings
 
 def test_categories_parse_from_a_json_env_string() -> None:
     raw = '[{"name":"Travel","description":"Flights.","calendar":"Sebastiens Travels"}]'
-    settings = Settings(_env_file=None, categories=raw)  # type: ignore[arg-type]
+    settings = Settings(categories=raw)  # type: ignore[arg-type]
     assert len(settings.categories) == 1
     assert settings.categories[0].name == "travel"
     assert settings.categories[0].calendar == "Sebastiens Travels"
 
 
-def test_categories_load_from_a_yaml_file(tmp_path: Path) -> None:
-    path = tmp_path / "categories.yaml"
-    path.write_text(
-        "- name: music\n"
-        "  description: Concerts and gigs.\n"
-        "  calendar: Music\n"
-        "- name: travel\n"
-        "  description: Flights and hotels.\n"
-        "  calendar: Sebastiens Travels\n"
-    )
-    settings = Settings(_env_file=None, categories_file=path)
-    assert [r.name for r in settings.categories] == ["music", "travel"]
-
-
 def test_duplicate_category_names_are_rejected() -> None:
     with pytest.raises(ValidationError, match="duplicate category name"):
         Settings(
-            _env_file=None,
             categories=[
                 {"name": "travel", "description": "a", "calendar": "A"},
                 {"name": "Travel", "description": "b", "calendar": "B"},
@@ -43,30 +28,37 @@ def test_duplicate_category_names_are_rejected() -> None:
 
 def test_empty_category_description_is_rejected() -> None:
     with pytest.raises(ValidationError):
-        Settings(
-            _env_file=None, categories=[{"name": "travel", "description": "", "calendar": "A"}]
-        )  # type: ignore[arg-type]
+        Settings(categories=[{"name": "travel", "description": "", "calendar": "A"}])  # type: ignore[arg-type]
 
 
 def test_bad_default_timezone_is_rejected() -> None:
     with pytest.raises(ValidationError, match="not a known IANA zone"):
-        Settings(_env_file=None, default_timezone="Europe/Atlantis")
+        Settings(default_timezone="Europe/Atlantis")
 
 
 def test_empty_categories_env_string() -> None:
-    assert Settings(_env_file=None, categories="").categories == []  # type: ignore[arg-type]
+    assert Settings(categories="").categories == []  # type: ignore[arg-type]
 
 
-def test_missing_categories_file_is_a_config_error_not_a_traceback(tmp_path: Path) -> None:
-    with pytest.raises(ValidationError, match="cannot read CATEGORIES_FILE"):
-        Settings(_env_file=None, categories_file=tmp_path / "nope.yaml")
+def test_sweep_folders_parse_from_a_comma_separated_env_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SWEEP_FOLDERS", "Archive,Sent")
+    assert Settings().sweep_folders == ["Archive", "Sent"]
 
 
-def test_categories_file_must_hold_a_list(tmp_path: Path) -> None:
-    path = tmp_path / "categories.yaml"
-    path.write_text("music:\n  calendar: Music\n")
-    with pytest.raises(ValidationError, match="must contain a list"):
-        Settings(_env_file=None, categories_file=path)
+def test_config_json_is_read_but_the_environment_overrides_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The portal writes data/config.json; a real environment variable must still beat
+    it for one-off debugging."""
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "config.json").write_text('{"imap_username": "from-config"}')
+
+    assert Settings().imap_username == "from-config"
+
+    monkeypatch.setenv("IMAP_USERNAME", "from-env")
+    assert Settings().imap_username == "from-env"
 
 
 @pytest.mark.parametrize(
@@ -86,4 +78,4 @@ def test_categories_file_must_hold_a_list(tmp_path: Path) -> None:
 )
 def test_out_of_range_numeric_settings_are_rejected(field: str, value: float) -> None:
     with pytest.raises(ValidationError):
-        Settings(_env_file=None, **{field: value})
+        Settings(**{field: value})

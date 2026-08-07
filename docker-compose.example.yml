@@ -1,13 +1,15 @@
 services:
   email-to-cal:
-    image: ghcr.io/OWNER/email-to-cal:latest
+    image: ghcr.io/sebastienstdenis/email-to-cal:latest
     container_name: email-to-cal
     restart: unless-stopped
-    env_file: .env
+    ports:
+      # The portal has no login, so keep it bound to localhost. On a remote server,
+      # reach it with: ssh -L 8080:localhost:8080 your-server
+      - "127.0.0.1:8080:8080"
     volumes:
-      # Holds credentials.json, token.json, and state.sqlite. Back this up.
-      # The same ./data the CLI uses locally, so one .env serves both.
-      - ./data:/app/data
-    # The container rewrites token.json after each refresh, so ./data must be writable
-    # by this uid: chown -R 10001:10001 ./data
-    user: "10001:10001"
+      # Holds config.json, token.json, and state.sqlite. Back this up.
+      - data:/app/data
+
+volumes:
+  data:

@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import logging
-import signal
 import threading
 import time
-import types
 from dataclasses import dataclass, field
 
 import anthropic
@@ -18,7 +16,6 @@ from .mailbox import AuthenticationFatal, Mailbox, sleep_with_backoff
 from .mime import parse_email
 from .schema import EmailDocument, ExtractedEvent, ExtractionResult
 from .store import Store
-from .timezones import resolve_zones, valid_zone
 
 log = logging.getLogger(__name__)
 
@@ -113,8 +110,6 @@ class Pipeline:
     def _emit(self, doc: EmailDocument, event: ExtractedEvent, outcome: Outcome) -> None:
         settings = self._settings
         calendar_name = settings.calendar_for(event.category)
-
-        self._resolve_missing_timezone(event)
         body = build_event_body(event, settings, message_id=doc.message_id)
 
         if settings.dry_run or self._calendar is None:
@@ -128,41 +123,17 @@ class Pipeline:
 
         calendar_id = self._calendar.resolve_calendar(calendar_name)
         event_id = self._calendar.insert(calendar_id, body)
-        self._store.record_event(event_id, doc.message_id, calendar_id)
+        self._store.record_event(event_id, doc.message_id, calendar_id, event.title)
         log.info("created %r on %r (%s)", event.title, calendar_name, event_id)
         outcome.created.append((calendar_name, event.title))
 
-    def _resolve_missing_timezone(self, event: ExtractedEvent) -> None:
-        """Only reach for the network when local resolution genuinely failed."""
-        if event.all_day or valid_zone(event.start_tz):
-            return
-        resolved, _ = resolve_zones(
-            start_tz=event.start_tz,
-            end_tz=event.end_tz,
-            departure_iata=event.departure_iata,
-            arrival_iata=event.arrival_iata,
-            location=event.location,
-            default_timezone="",
-        )
-        if resolved or not event.location:
-            return
-        looked_up = valid_zone(self._extractor.lookup_timezone(event.location))
-        if looked_up:
-            log.info("web lookup resolved %r to %s", event.location, looked_up)
-            event.start_tz = looked_up
 
+def run(settings: Settings, stopping: threading.Event) -> None:
+    """Main loop: connect, catch up, idle, repeat. Survives everything but bad credentials.
 
-def run(settings: Settings) -> None:
-    """Main loop: connect, catch up, idle, repeat. Survives everything but bad credentials."""
-    stopping = threading.Event()
-
-    def _stop(signum: int, _frame: types.FrameType | None) -> None:
-        log.info("received signal %d; shutting down", signum)
-        stopping.set()
-
-    signal.signal(signal.SIGTERM, _stop)
-    signal.signal(signal.SIGINT, _stop)
-
+    `stopping` is owned by the caller: the CLI sets it from signal handlers, the portal
+    sets it to restart the watcher after a config change.
+    """
     with Store(settings.state_db) as store:
         calendar = None if settings.dry_run else CalendarClient(settings, store)
         if calendar is not None:

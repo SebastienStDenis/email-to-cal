@@ -179,7 +179,7 @@ def cache_key(doc: EmailDocument, settings: Settings) -> str:
 
 
 class Extractor:
-    """Wraps the Anthropic client with the prompt, schema, and enrichment pass."""
+    """Wraps the Anthropic client with the prompt and schema."""
 
     def __init__(self, settings: Settings, client: anthropic.Anthropic | None = None) -> None:
         self._settings = settings
@@ -208,49 +208,3 @@ class Extractor:
         if result is None:
             raise RuntimeError(f"model returned no parseable output (stop={response.stop_reason})")
         return result
-
-    def lookup_timezone(self, location: str) -> str | None:
-        """Resolve a venue to an IANA zone via web search.
-
-        Deliberately a second, separate call: the search tool emits citation-bearing text
-        blocks, and citations are incompatible with structured output. Two cheap calls beat
-        one that intermittently 400s.
-        """
-        if not self._settings.enable_web_search:
-            return None
-
-        try:
-            search = self._client.messages.create(
-                model=self._settings.anthropic_model,
-                max_tokens=2000,
-                output_config={"effort": "low"},
-                tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 3}],
-                messages=[
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Which city and country is this venue in: {location!r}? "
-                            "Answer in one sentence."
-                        ),
-                    }
-                ],
-            )
-            summary = "\n".join(b.text for b in search.content if b.type == "text").strip()
-            if not summary:
-                return None
-
-            zone = self._client.messages.create(
-                model=self._settings.anthropic_model,
-                max_tokens=200,
-                output_config={"effort": "low"},
-                system=(
-                    "Reply with a single IANA timezone identifier and nothing else, "
-                    "for example Europe/Zurich. Reply with UNKNOWN if you cannot tell."
-                ),
-                messages=[{"role": "user", "content": summary}],
-            )
-            answer = "".join(b.text for b in zone.content if b.type == "text").strip()
-            return None if answer.upper() == "UNKNOWN" else answer
-        except anthropic.APIError:
-            log.warning("timezone web lookup failed for %r", location, exc_info=True)
-            return None

@@ -10,27 +10,27 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 @pytest.fixture(autouse=True)
-def _isolate_from_ambient_config(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep the developer's real .env and shell out of the tests.
+def _isolate_from_ambient_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the developer's real data/config.json and shell out of the tests.
 
-    Settings reads .env and the environment by default, which is what makes the service
-    configurable — and what would otherwise let a local DRY_RUN=true or a real credential
-    silently change what the suite is testing.
+    Settings reads both by default, which is what makes the service configurable — and
+    what would otherwise let a local DRY_RUN=true or a real credential silently change
+    what the suite is testing. The chdir isolates the relative config paths.
     """
     for field in Settings.model_fields:
         monkeypatch.delenv(field.upper(), raising=False)
+    monkeypatch.chdir(tmp_path)
 
 
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
     return Settings(
-        _env_file=None,
         imap_username="test@icloud.com",
         imap_password="secret",
         anthropic_api_key="test-key",
+        dry_run=False,
         state_db=tmp_path / "state.sqlite",
         google_token_file=tmp_path / "token.json",
-        google_credentials_file=tmp_path / "credentials.json",
         default_timezone="Europe/Zurich",
         default_calendar="primary",
         categories=[

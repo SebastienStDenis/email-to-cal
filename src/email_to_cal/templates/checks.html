@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+
+<section class="card">
+  <h2>Checks</h2>
+  <p class="hint">Live results against IMAP, Anthropic, and Google Calendar.</p>
+  <table>
+    <tr><th></th><th>Check</th><th>Detail</th></tr>
+    {% for result in results %}
+    <tr>
+      <td>{% if result.ok %}<span class="pill ok">ok</span>
+          {% else %}<span class="pill bad">failed</span>{% endif %}</td>
+      <td>{{ result.name }}</td>
+      <td class="muted">{{ result.detail }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  <div class="actions">
+    <a href="{{ url_for('status_page') }}">Back to status</a>
+  </div>
+</section>
+
+{% endblock %}

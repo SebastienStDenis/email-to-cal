@@ -7,13 +7,11 @@ import logging
 import random
 import time
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
@@ -51,9 +49,7 @@ def _is_retryable(exc: HttpError) -> bool:
 def load_credentials(settings: Settings) -> Credentials:
     token_file = settings.google_token_file
     if not token_file.exists():
-        raise CredentialsExpired(
-            f"no Google token at {token_file}; run 'email-to-cal auth-google' and copy it here"
-        )
+        raise CredentialsExpired(f"no Google token at {token_file}; connect Google in the portal")
     creds: Credentials = Credentials.from_authorized_user_file(str(token_file), SCOPES)
     if creds.valid:
         return creds
@@ -64,17 +60,31 @@ def load_credentials(settings: Settings) -> Credentials:
             raise CredentialsExpired(
                 "Google refused the refresh token. If the OAuth app is still in 'Testing' "
                 "publishing status its tokens expire after 7 days: set it to 'In production' "
-                "and re-run 'email-to-cal auth-google'."
+                "and re-authorise."
             ) from exc
         token_file.write_text(creds.to_json())
         return creds
-    raise CredentialsExpired("stored Google credentials are unusable; re-run auth-google")
+    raise CredentialsExpired(
+        "stored Google credentials are unusable; reconnect Google in the portal"
+    )
 
 
-def run_consent_flow(credentials_file: Path, token_file: Path, port: int = 0) -> None:
-    """Interactive loopback consent, run once on a machine with a browser."""
-    flow = InstalledAppFlow.from_client_secrets_file(str(credentials_file), SCOPES)
-    creds = flow.run_local_server(port=port, access_type="offline", prompt="consent")
+def client_config(settings: Settings) -> dict[str, Any]:
+    """The OAuth client description the consent flow expects, built from the two
+    configured strings."""
+    return {
+        "installed": {
+            "client_id": settings.google_client_id,
+            "client_secret": settings.google_client_secret,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": ["http://localhost"],
+        }
+    }
+
+
+def save_token(settings: Settings, creds: Credentials) -> None:
+    token_file = settings.google_token_file
     token_file.parent.mkdir(parents=True, exist_ok=True)
     token_file.write_text(creds.to_json())
     token_file.chmod(0o600)
@@ -106,17 +116,15 @@ def build_event_body(
     settings: Settings,
     *,
     message_id: str,
-    fallback_timezone: str | None = None,
 ) -> dict[str, Any]:
     """Render one extracted event as a Google Calendar event resource."""
-    default_tz = fallback_timezone or settings.default_timezone
     start_zone, end_zone = resolve_zones(
         start_tz=event.start_tz,
         end_tz=event.end_tz,
         departure_iata=event.departure_iata,
         arrival_iata=event.arrival_iata,
         location=event.location,
-        default_timezone=default_tz,
+        default_timezone=settings.default_timezone,
     )
 
     start_value = parse_naive(event.start_local)
@@ -224,13 +232,6 @@ class CalendarClient:
         log.info("created calendar %r (%s)", name, created["id"])
         self._store.set_calendar_id(name, created["id"])
         return str(created["id"])
-
-    def calendar_timezone(self, calendar_id: str) -> str | None:
-        try:
-            info = self._retry(self._service.calendars().get(calendarId=calendar_id))
-            return info.get("timeZone")
-        except HttpError:
-            return None
 
     def insert(self, calendar_id: str, body: dict[str, Any]) -> str:
         """Insert an event, treating an existing id as success."""

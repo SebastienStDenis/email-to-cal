@@ -1,15 +1,24 @@
-"""Runtime configuration, sourced entirely from the environment."""
+"""Runtime configuration: the portal's config.json, overridable by environment variables."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    JsonConfigSettingsSource,
+    NoDecode,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
+
+# Written by the web portal; relative so it lands in the mounted volume in the container
+# and in ./data locally, like every other runtime file.
+CONFIG_FILE = Path("data/config.json")
 
 
 class CategoryRule(BaseModel):
@@ -26,7 +35,25 @@ class CategoryRule(BaseModel):
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(json_file=CONFIG_FILE, extra="ignore")
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        # config.json is what the portal writes; environment variables override it for
+        # one-off debugging (LOG_LEVEL=DEBUG email-to-cal run).
+        return (
+            init_settings,
+            env_settings,
+            JsonConfigSettingsSource(settings_cls),
+            file_secret_settings,
+        )
 
     imap_host: str = "imap.mail.me.com"
     imap_port: int = 993
@@ -39,31 +66,35 @@ class Settings(BaseSettings):
     first_run_lookback_days: int = Field(default=0, ge=0)
     # Folders to catch up on periodically, for mail filed away before IDLE saw it. New
     # mail always lands in imap_folder first, so these need a sweep, not a second watcher.
-    sweep_folders: list[str] = []
+    # NoDecode preserves the comma-separated form an environment override uses instead of
+    # asking pydantic-settings to JSON-decode it before the validator below sees it.
+    sweep_folders: Annotated[list[str], NoDecode] = []
     sweep_interval_minutes: int = Field(default=15, ge=1)
 
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-opus-5"
     anthropic_effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
     enable_vision: bool = True
-    enable_web_search: bool = False
     # A negative value would make every attachment look oversized and silently vanish.
     max_attachment_mb: float = Field(default=8.0, gt=0)
     min_confidence: float = Field(default=0.75, ge=0.0, le=1.0)
 
-    # Relative to the working directory, so one .env works both locally and in the
+    # The OAuth client from the Google Cloud console (Desktop app type): two strings,
+    # no downloaded credentials file.
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    # Relative to the working directory, so one config works both locally and in the
     # container, where WORKDIR is /app and the volume mounts at /app/data.
-    google_credentials_file: Path = Path("data/credentials.json")
     google_token_file: Path = Path("data/token.json")
     default_calendar: str = "primary"
     default_timezone: str = "UTC"
 
     state_db: Path = Path("data/state.sqlite")
-    dry_run: bool = False
+    # Safe by default: a fresh install logs what it would create until switched off.
+    dry_run: bool = True
     log_level: str = "INFO"
 
     categories: list[CategoryRule] = []
-    categories_file: Path | None = None
 
     @field_validator("categories", mode="before")
     @classmethod
@@ -92,24 +123,7 @@ class Settings(BaseSettings):
         return value
 
     @model_validator(mode="after")
-    def _finalise_categories(self) -> Settings:
-        if self.categories_file is not None:
-            # pydantic only turns ValueError into a ValidationError, so a typo'd path
-            # would otherwise reach the operator as a bare traceback.
-            try:
-                raw = self.categories_file.read_text()
-            except OSError as exc:
-                raise ValueError(
-                    f"cannot read CATEGORIES_FILE {self.categories_file}: {exc}"
-                ) from exc
-            loaded = yaml.safe_load(raw) or []
-            if not isinstance(loaded, list):
-                raise ValueError(
-                    f"CATEGORIES_FILE {self.categories_file} must contain a list of "
-                    f"{{name, description, calendar}} entries, got {type(loaded).__name__}"
-                )
-            self.categories = [CategoryRule.model_validate(item) for item in loaded]
-
+    def _check_consistency(self) -> Settings:
         seen: set[str] = set()
         for rule in self.categories:
             if rule.name in seen:
@@ -118,7 +132,7 @@ class Settings(BaseSettings):
 
         if self.imap_folder in self.sweep_folders:
             raise ValueError(
-                f"SWEEP_FOLDERS must not repeat IMAP_FOLDER ({self.imap_folder!r}); "
+                f"swept folders must not repeat the watched folder ({self.imap_folder!r}); "
                 "it is already watched continuously"
             )
         return self
