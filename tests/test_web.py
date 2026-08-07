@@ -90,6 +90,23 @@ def test_connect_button_saves_the_form_then_redirects_to_google(client: FlaskCli
     assert Settings().imap_username == "test@icloud.com"
 
 
+def test_connect_from_a_remote_hostname_explains_instead_of_calling_google(
+    client: FlaskClient,
+) -> None:
+    """Google rejects non-loopback redirects with a cryptic policy page; the portal
+    must catch it first and say what to do."""
+    reply = client.post(
+        "/settings", data={**FORM, "action": "connect"}, base_url="http://zoloft:8484"
+    )
+    assert reply.status_code == 302
+    assert reply.headers["Location"].endswith("/settings")
+    # The form was still saved before the redirect back.
+    assert Settings().imap_username == "test@icloud.com"
+
+    follow = client.get("/settings")
+    assert b"ssh -L 8484:localhost:8484 zoloft" in follow.data
+
+
 def test_connect_without_a_client_id_returns_to_settings(client: FlaskClient) -> None:
     form = {key: value for key, value in FORM.items() if not key.startswith("google_")}
     reply = client.post("/settings", data={**form, "action": "connect"})

@@ -15,6 +15,7 @@ import threading
 import time
 from collections.abc import Mapping
 from typing import Any
+from urllib.parse import urlsplit
 from zoneinfo import available_timezones
 
 from flask import Flask, Response, flash, redirect, render_template, request, session, url_for
@@ -231,6 +232,19 @@ def create_app(supervisor: Supervisor) -> Flask:
         if request.form.get("action") == "connect":
             if not settings.google_client_id or not settings.google_client_secret:
                 flash("Enter the Google client id and secret to connect.")
+                return redirect(url_for("settings_page"))
+            parts = urlsplit(request.url)
+            if parts.hostname not in ("localhost", "127.0.0.1", "::1"):
+                # Google only redirects desktop clients back to loopback addresses;
+                # letting this through ends in a cryptic policy-violation page.
+                port = parts.port or 80
+                flash(
+                    "Your settings were saved, but Google can only connect while this "
+                    f"page is open as localhost, not {parts.hostname}. Run "
+                    f"'ssh -L {port}:localhost:{port} {parts.hostname}' on your "
+                    f"computer, open http://localhost:{port}/settings, and click "
+                    "Connect there. This is only needed once."
+                )
                 return redirect(url_for("settings_page"))
             flow = Flow.from_client_config(
                 client_config(settings), scopes=SCOPES, redirect_uri=_oauth_redirect_uri()
