@@ -26,7 +26,9 @@
         <input type="password" id="imap_password" name="imap_password"
                value="{{ values.imap_password }}" placeholder="xxxx-xxxx-xxxx-xxxx">
         <p class="hint">Not your Apple ID password. Create one at
-          appleid.apple.com &rarr; Sign-In and Security &rarr; App-Specific Passwords.</p>
+          <a href="https://appleid.apple.com" target="_blank" rel="noopener">appleid.apple.com</a>
+          &rarr; Sign-In and Security &rarr; App-Specific Passwords. Note that changing
+          your Apple ID password revokes every app-specific password.</p>
       </div>
       <div>
         <label for="imap_folder">Watched folder</label>
@@ -80,6 +82,10 @@
         <label for="anthropic_api_key">API key</label>
         <input type="password" id="anthropic_api_key" name="anthropic_api_key"
                value="{{ values.anthropic_api_key }}" placeholder="sk-ant-...">
+        <p class="hint">From
+          <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a>
+          &rarr; API keys. Extraction is one model call per email, cached by content, so
+          a personal mailbox costs very little.</p>
       </div>
       <div>
         <label for="min_confidence">Minimum confidence</label>
@@ -139,10 +145,31 @@
                value="{{ values.google_client_secret }}" placeholder="GOCSPX-...">
       </div>
     </div>
-    <p class="hint">From your Google Cloud project's Desktop-app OAuth client; the README
-      walks through the one-time setup. Save first, then connect. Connecting opens
-      Google's consent screen and needs this page to be open as
-      <strong>localhost</strong> (use an SSH tunnel for a remote server).</p>
+    <details>
+      <summary>How to get a client id and secret (one-time, about five minutes)</summary>
+      <div class="hint">
+        <ol>
+          <li>At <a href="https://console.cloud.google.com" target="_blank"
+              rel="noopener">console.cloud.google.com</a>, create a project.</li>
+          <li><strong>APIs &amp; Services &rarr; Library</strong> &rarr; enable the
+            <strong>Google Calendar API</strong>.</li>
+          <li><strong>APIs &amp; Services &rarr; OAuth consent screen</strong>: set it
+            up for <strong>External</strong> users, then set the publishing status to
+            <strong>In production</strong>. An app left in Testing issues tokens that
+            expire after 7 days, and the service will silently stop working every week.
+            Publishing does not require Google's verification review; you will see a
+            one-time "Google hasn't verified this app" screen (Advanced &rarr;
+            continue), which Google expects for apps used only by their author.</li>
+          <li><strong>APIs &amp; Services &rarr; Credentials &rarr; Create Credentials
+            &rarr; OAuth client ID &rarr; Desktop app</strong>. Copy the client id and
+            secret into the fields above.</li>
+        </ol>
+      </div>
+    </details>
+    <p class="hint">Save first, then connect. Connecting opens Google's consent screen
+      and needs this page to be open as <strong>localhost</strong> (use an SSH tunnel
+      for a remote server), because Google returns the authorisation to a loopback
+      address.</p>
     <div class="actions">
       <button form="google-connect" class="small">
         {% if google_connected %}Reconnect Google Calendar{% else %}Connect Google Calendar{% endif %}
