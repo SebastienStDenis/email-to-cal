@@ -258,6 +258,10 @@ def create_app(supervisor: Supervisor) -> Flask:
             )
             auth_url, state = flow.authorization_url(access_type="offline", prompt="consent")
             session["oauth_state"] = state
+            # PKCE: the flow hashed a fresh code verifier into the auth URL, and the
+            # callback runs on a new Flow instance that must present the same verifier
+            # or Google rejects the exchange with "Missing code verifier".
+            session["code_verifier"] = flow.code_verifier
             return redirect(auth_url)
 
         flash("Settings saved.")
@@ -274,6 +278,7 @@ def create_app(supervisor: Supervisor) -> Flask:
             redirect_uri=_oauth_redirect_uri(),
             state=session.pop("oauth_state", None),
         )
+        flow.code_verifier = session.pop("code_verifier", None)
         try:
             # The redirect arrives over plain http because this is a loopback flow;
             # oauthlib insists on https, so present it as such (the token exchange

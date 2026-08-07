@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 from pathlib import Path
 
@@ -88,6 +90,20 @@ def test_connect_button_saves_the_form_then_redirects_to_google(client: FlaskCli
     assert reply.headers["Location"].startswith("https://accounts.google.com/")
     # The form was saved on the way out, so nothing is lost during the consent trip.
     assert Settings().imap_username == "test@icloud.com"
+
+
+def test_connect_keeps_the_pkce_verifier_the_callback_must_present(
+    client: FlaskClient,
+) -> None:
+    """The auth URL carries a hashed code verifier, and the callback rebuilds the flow
+    from scratch; without the stored verifier Google answers 'Missing code verifier'."""
+    reply = client.post("/settings", data={**FORM, "action": "connect"})
+    with client.session_transaction() as session:
+        verifier = session["code_verifier"]
+
+    digest = hashlib.sha256(verifier.encode()).digest()
+    challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+    assert f"code_challenge={challenge}" in reply.headers["Location"]
 
 
 def test_connect_from_a_remote_http_hostname_explains_instead_of_calling_google(
