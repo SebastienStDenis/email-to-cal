@@ -9,9 +9,22 @@ from email_to_cal.config import CategoryRule, Settings
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_from_ambient_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the developer's real .env and shell out of the tests.
+
+    Settings reads .env and the environment by default, which is what makes the service
+    configurable — and what would otherwise let a local DRY_RUN=true or a real credential
+    silently change what the suite is testing.
+    """
+    for field in Settings.model_fields:
+        monkeypatch.delenv(field.upper(), raising=False)
+
+
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
     return Settings(
+        _env_file=None,
         imap_username="test@icloud.com",
         imap_password="secret",
         anthropic_api_key="test-key",

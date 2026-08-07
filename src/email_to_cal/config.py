@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     # imap-tools refuses anything past it outright. Zero would spin the loop at full CPU.
     imap_idle_seconds: int = Field(default=300, ge=10, le=1740)
     first_run_lookback_days: int = Field(default=0, ge=0)
+    # Folders to catch up on periodically, for mail filed away before IDLE saw it. New
+    # mail always lands in imap_folder first, so these need a sweep, not a second watcher.
+    sweep_folders: list[str] = []
+    sweep_interval_minutes: int = Field(default=15, ge=1)
 
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-opus-5"
@@ -47,12 +51,14 @@ class Settings(BaseSettings):
     max_attachment_mb: float = Field(default=8.0, gt=0)
     min_confidence: float = Field(default=0.75, ge=0.0, le=1.0)
 
-    google_credentials_file: Path = Path("/data/credentials.json")
-    google_token_file: Path = Path("/data/token.json")
+    # Relative to the working directory, so one .env works both locally and in the
+    # container, where WORKDIR is /app and the volume mounts at /app/data.
+    google_credentials_file: Path = Path("data/credentials.json")
+    google_token_file: Path = Path("data/token.json")
     default_calendar: str = "primary"
     default_timezone: str = "UTC"
 
-    state_db: Path = Path("/data/state.sqlite")
+    state_db: Path = Path("data/state.sqlite")
     dry_run: bool = False
     log_level: str = "INFO"
 
@@ -65,6 +71,15 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             stripped = value.strip()
             return json.loads(stripped) if stripped else []
+        return value
+
+    @field_validator("sweep_folders", mode="before")
+    @classmethod
+    def _parse_sweep_folders(cls, value: Any) -> Any:
+        # Comma-separated, because iCloud folder names contain spaces ("Deleted Messages")
+        # far more often than commas.
+        if isinstance(value, str):
+            return [name.strip() for name in value.split(",") if name.strip()]
         return value
 
     @field_validator("default_timezone")
@@ -100,6 +115,12 @@ class Settings(BaseSettings):
             if rule.name in seen:
                 raise ValueError(f"duplicate category name {rule.name!r}")
             seen.add(rule.name)
+
+        if self.imap_folder in self.sweep_folders:
+            raise ValueError(
+                f"SWEEP_FOLDERS must not repeat IMAP_FOLDER ({self.imap_folder!r}); "
+                "it is already watched continuously"
+            )
         return self
 
     @property

@@ -296,6 +296,7 @@ def test_ordinary_failures_do_not_stop_the_service(settings: Settings) -> None:
 
 def test_calendar_routing_is_case_insensitive() -> None:
     settings = Settings(
+        _env_file=None,
         categories=[
             CategoryRule(name="Travel", description="Flights.", calendar="Sebastiens Travels")
         ],

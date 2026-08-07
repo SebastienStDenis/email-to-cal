@@ -39,14 +39,30 @@ class FakeFolderManager:
         return {"UIDVALIDITY": self._box.uidvalidity}
 
 
-class FakeBox:
-    """Just enough IMAP to exercise the cursor: a UID-keyed store and a UIDVALIDITY."""
+class FakeFolderManagerMulti(FakeFolderManager):
+    def set(self, folder: str) -> None:
+        self._box.selected = folder
 
-    def __init__(self, uids: list[int], uidvalidity: int = 100) -> None:
-        self.messages = {uid: fixture_bytes("restaurant_plain.eml") for uid in uids}
+
+class FakeBox:
+    """Just enough IMAP to exercise the cursor: UID-keyed folders and a UIDVALIDITY."""
+
+    def __init__(
+        self,
+        uids: list[int],
+        uidvalidity: int = 100,
+        folders: dict[str, dict[int, bytes]] | None = None,
+    ) -> None:
+        self.folders: dict[str, dict[int, bytes]] = folders or {}
+        self.folders["INBOX"] = {uid: fixture_bytes("restaurant_plain.eml") for uid in uids}
+        self.selected = "INBOX"
         self.uidvalidity = uidvalidity
-        self.folder = FakeFolderManager(self)
+        self.folder = FakeFolderManagerMulti(self)
         self.fetch_criteria: list[str] = []
+
+    @property
+    def messages(self) -> dict[int, bytes]:
+        return self.folders[self.selected]
 
     def uids(self, criteria: Any = "ALL") -> list[str]:
         if criteria == "ALL":
@@ -195,7 +211,7 @@ def test_uidvalidity_change_resyncs_instead_of_replaying(
 
     # The server renumbered everything; the old cursor is meaningless.
     box.uidvalidity = 200
-    box.messages = {u: fixture_bytes("restaurant_plain.eml") for u in (1, 2, 3)}
+    box.folders["INBOX"] = {u: fixture_bytes("restaurant_plain.eml") for u in (1, 2, 3)}
 
     assert drain(mb, box) == []
     assert store.get_cursor("INBOX") == (200, 3)
@@ -213,6 +229,73 @@ def test_lookback_window_with_no_matches_does_not_replay_the_mailbox(
 
     assert drain(mb, box) == []
     assert store.get_cursor("INBOX") == (100, 5)
+    store.close()
+
+
+def test_sweep_picks_up_mail_filed_away_before_idle_saw_it(settings: Settings) -> None:
+    """The archive race: a message moved out of INBOX gets a new UID somewhere else."""
+    settings.sweep_folders = ["Archive"]
+    store = Store(settings.state_db)
+    mb = Mailbox(settings, store)
+    box = FakeBox([1], folders={"Archive": {50: fixture_bytes("concert_ics.eml")}})
+
+    # First contact with Archive establishes its cursor without replaying its history.
+    assert list(mb.sweep(box, "Archive")) == []
+    assert store.get_cursor("Archive") == (100, 50)
+
+    box.folders["Archive"][51] = fixture_bytes("flight_jsonld.eml")
+    swept = []
+    for uid, _ in mb.sweep(box, "Archive"):
+        swept.append(uid)
+        mb.ack(uid)
+
+    assert swept == [51]
+    assert store.get_cursor("Archive") == (100, 51)
+    store.close()
+
+
+def test_sweep_never_backfills_even_with_a_lookback_configured(settings: Settings) -> None:
+    """An archive holds years of mail that already passed through INBOX."""
+    settings.sweep_folders = ["Archive"]
+    settings.first_run_lookback_days = 30
+    store = Store(settings.state_db)
+    mb = Mailbox(settings, store)
+    box = FakeBox([1], folders={"Archive": {u: b"old" for u in range(1, 500)}})
+
+    assert list(mb.sweep(box, "Archive")) == []
+    assert store.get_cursor("Archive") == (100, 499)
+    store.close()
+
+
+def test_sweep_restores_the_watched_folder_even_when_it_fails(settings: Settings) -> None:
+    """IDLE only applies to the selected folder, so leaving Archive selected would mean
+    silently never seeing new INBOX mail again."""
+    settings.sweep_folders = ["Archive"]
+    store = Store(settings.state_db)
+    mb = Mailbox(settings, store)
+    box = FakeBox([1], folders={"Archive": {50: b"x"}})
+    list(mb.sweep(box, "Archive"))
+    assert box.selected == "INBOX"
+
+    box.folders["Archive"][51] = b"y"
+    with pytest.raises(RuntimeError):
+        for _uid, _raw in mb.sweep(box, "Archive"):
+            raise RuntimeError("boom")
+    assert box.selected == "INBOX"
+    store.close()
+
+
+def test_each_folder_keeps_its_own_cursor(settings: Settings) -> None:
+    settings.sweep_folders = ["Archive"]
+    store = Store(settings.state_db)
+    mb = Mailbox(settings, store)
+    box = FakeBox([1, 2], folders={"Archive": {50: b"x"}})
+
+    drain(mb, box)
+    list(mb.sweep(box, "Archive"))
+
+    assert store.get_cursor("INBOX") == (100, 2)
+    assert store.get_cursor("Archive") == (100, 50)
     store.close()
 
 

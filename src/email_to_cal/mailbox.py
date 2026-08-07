@@ -93,16 +93,15 @@ class Mailbox:
 
     # -- cursor ---------------------------------------------------------------------
 
-    def _uidvalidity(self, box: MailBox) -> int:
-        return int(box.folder.status(self._settings.imap_folder, ["UIDVALIDITY"])["UIDVALIDITY"])
+    def _uidvalidity(self, box: MailBox, folder: str) -> int:
+        return int(box.folder.status(folder, ["UIDVALIDITY"])["UIDVALIDITY"])
 
-    def _sync_cursor(self, box: MailBox, uidvalidity: int) -> int:
+    def _sync_cursor(self, box: MailBox, folder: str, uidvalidity: int, *, backfill: bool) -> int:
         """Return the UID to start fetching from, resyncing if UIDVALIDITY moved."""
-        folder = self._settings.imap_folder
         stored = self._store.get_cursor(folder)
 
         if stored is None:
-            start = self._initial_uid(box)
+            start = self._initial_uid(box, backfill=backfill)
             log.info("no cursor for %s; starting at UID %d", folder, start)
             self._store.set_cursor(folder, uidvalidity, max(start - 1, 0))
             return start
@@ -117,19 +116,24 @@ class Mailbox:
                 stored_validity,
                 uidvalidity,
             )
-            start = self._initial_uid(box)
+            start = self._initial_uid(box, backfill=backfill)
             self._store.set_cursor(folder, uidvalidity, max(start - 1, 0))
             return start
 
         return last_uid + 1
 
-    def _initial_uid(self, box: MailBox) -> int:
-        """Where a fresh cursor begins, honouring the configured backfill window."""
+    def _initial_uid(self, box: MailBox, *, backfill: bool) -> int:
+        """Where a fresh cursor begins.
+
+        Swept folders never backfill: they hold mail that already passed through the
+        watched folder, so replaying them would re-read years of archive through the model
+        to find the handful of messages the watcher genuinely missed.
+        """
         all_uids = [int(u) for u in box.uids()]
         next_uid = max(all_uids) + 1 if all_uids else 1
 
         days = self._settings.first_run_lookback_days
-        if days <= 0:
+        if not backfill or days <= 0:
             return next_uid
 
         since = (datetime.now(UTC) - timedelta(days=days)).date()
@@ -148,16 +152,37 @@ class Mailbox:
         """
         self._ack = (uid, error)
 
-    def fetch_new(self, box: MailBox) -> Iterator[tuple[int, bytes]]:
-        """Yield (uid, raw_rfc822) for everything past the cursor.
+    def select(self, box: MailBox, folder: str) -> None:
+        box.folder.set(folder)
+
+    def sweep(self, box: MailBox, folder: str) -> Iterator[tuple[int, bytes]]:
+        """Catch up on a folder that is not being watched, then restore the watched one.
+
+        Mail archived from a phone before IDLE saw it is otherwise invisible: a move
+        deletes it from the watched folder and gives it a fresh UID somewhere else.
+        Message-ID dedup means anything already handled is skipped for free.
+        """
+        primary = self._settings.imap_folder
+        try:
+            self.select(box, folder)
+            yield from self.fetch_new(box, folder=folder, backfill=False)
+        finally:
+            # IDLE only applies to the selected folder, so the watched one must come back
+            # even if the sweep raised partway through.
+            self.select(box, primary)
+
+    def fetch_new(
+        self, box: MailBox, folder: str | None = None, *, backfill: bool = True
+    ) -> Iterator[tuple[int, bytes]]:
+        """Yield (uid, raw_rfc822) for everything past the cursor in the selected folder.
 
         The cursor advances only for messages the consumer acknowledges. A failure holds
         the cursor so the next pass retries, and after MAX_ATTEMPTS the message is written
         off to failed_messages and skipped so one poison email cannot stall the mailbox.
         """
-        folder = self._settings.imap_folder
-        uidvalidity = self._uidvalidity(box)
-        start = self._sync_cursor(box, uidvalidity)
+        folder = folder or self._settings.imap_folder
+        uidvalidity = self._uidvalidity(box, folder)
+        start = self._sync_cursor(box, folder, uidvalidity, backfill=backfill)
 
         # `n:*` always returns at least the highest UID, so filter against the cursor.
         for message in box.fetch(f"UID {start}:*", mark_seen=False, bulk=False):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import signal
 import threading
+import time
 import types
 from dataclasses import dataclass, field
 
@@ -172,6 +173,8 @@ def run(settings: Settings) -> None:
         attempt = 0
         store.beat()
 
+        sweep_due = 0.0
+
         while not stopping.is_set():
             try:
                 box = mailbox.connect()
@@ -180,6 +183,11 @@ def run(settings: Settings) -> None:
                         _process_one(pipeline, mailbox, store, uid, raw)
                         # Beat per message: a long backfill is healthy, not wedged.
                         store.beat()
+
+                    if settings.sweep_folders and time.monotonic() >= sweep_due:
+                        _sweep(settings, pipeline, mailbox, store, box)
+                        sweep_due = time.monotonic() + settings.sweep_interval_minutes * 60
+
                     store.beat()
                     # Only a completed cycle counts as progress. Resetting on connect
                     # alone would pin the backoff at its first rung when the failure is
@@ -222,6 +230,22 @@ def _process_one(pipeline: Pipeline, mailbox: Mailbox, store: Store, uid: int, r
         mailbox.ack(uid, error=f"{type(exc).__name__}: {exc}")
     else:
         mailbox.ack(uid)
+
+
+def _sweep(
+    settings: Settings, pipeline: Pipeline, mailbox: Mailbox, store: Store, box: object
+) -> None:
+    """Catch up on folders mail may have been filed into before IDLE saw it."""
+    for folder in settings.sweep_folders:
+        try:
+            for uid, raw in mailbox.sweep(box, folder):  # type: ignore[arg-type]
+                _process_one(pipeline, mailbox, store, uid, raw)
+                store.beat()
+        except AuthenticationFatal:
+            raise
+        except Exception:
+            # A missing or renamed folder must not take down the INBOX watcher.
+            log.warning("sweep of folder %r failed", folder, exc_info=True)
 
 
 def _bootstrap_calendars(settings: Settings, calendar: CalendarClient) -> None:

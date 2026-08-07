@@ -36,6 +36,48 @@ Re-delivering the same email is a no-op: every event gets a deterministic id der
 the message and the event's identity, so a duplicate insert is recognised and ignored
 rather than double-booking you.
 
+## Which folders it reads
+
+`IMAP_FOLDER` (default `INBOX`) is the one folder that gets a live IDLE connection. That
+matters because of a race: if you read a booking confirmation on your phone and archive it
+before the service has seen it, the move deletes it from INBOX and gives it a fresh UID
+somewhere else, and it is gone as far as the watcher is concerned. The window is seconds in
+steady state and wide open during restarts and deploys.
+
+`SWEEP_FOLDERS` closes it. Those folders get a catch-up pass every `SWEEP_INTERVAL_MINUTES`
+on the *same* connection — iCloud allows only about five per account and your phone and Mac
+already use some, so a second push connection is the wrong trade. New mail always lands in
+`IMAP_FOLDER` first, so a sweep is sufficient; swept folders never backfill, and anything
+already handled is skipped by Message-ID.
+
+```
+SWEEP_FOLDERS=Archive,Sent
+SWEEP_INTERVAL_MINUTES=15
+```
+
+## Running it
+
+The same `.env` works both ways. Paths default to `./data`, which is your checkout when you
+run the CLI and the mounted volume inside the container — so don't pin `STATE_DB` or the
+Google file paths to absolute container paths unless you mean to.
+
+Locally:
+
+```sh
+uv sync --all-groups
+mkdir -p data && cp credentials.json token.json data/
+uv run email-to-cal check
+```
+
+In Docker, the image deliberately does **not** contain your `.env` — it is excluded from the
+build so secrets never end up in a pushed image. Supply it at runtime. `docker compose` does
+this via `env_file: .env`; with bare `docker run` it is `--env-file`:
+
+```sh
+docker run --rm --env-file .env -v "$PWD/data:/app/data" \
+  ghcr.io/OWNER/email-to-cal:latest check
+```
+
 ## Setup
 
 ### 1. iCloud app-specific password
@@ -79,6 +121,7 @@ container refreshes and rewrites `token.json`, so the directory must be writable
 cp .env.example .env          # then edit it
 cp docker-compose.example.yml docker-compose.yml
 mkdir -p data && cp credentials.json token.json data/
+chown -R 10001:10001 data     # the container refreshes token.json in place
 docker compose up -d
 ```
 
