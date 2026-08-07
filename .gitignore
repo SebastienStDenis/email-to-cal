@@ -16,3 +16,6 @@ token.json
 
 # Local overrides of the shipped examples.
 docker-compose.yml
+
+# Claude Code session workspaces.
+.claude/
