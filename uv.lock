@@ -399,6 +399,7 @@ dependencies = [
     { name = "google-api-python-client" },
     { name = "google-auth-oauthlib" },
     { name = "html2text" },
+    { name = "httpx" },
     { name = "icalendar" },
     { name = "imap-tools" },
     { name = "pydantic" },
@@ -407,7 +408,6 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "httpx" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "ruff" },
@@ -422,6 +422,7 @@ requires-dist = [
     { name = "google-api-python-client", specifier = ">=2.190" },
     { name = "google-auth-oauthlib", specifier = ">=1.2" },
     { name = "html2text", specifier = ">=2025.4.15" },
+    { name = "httpx", specifier = ">=0.28" },
     { name = "icalendar", specifier = ">=6.3" },
     { name = "imap-tools", specifier = ">=1.15" },
     { name = "pydantic", specifier = ">=2.11" },
@@ -430,7 +431,6 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "httpx", specifier = ">=0.28" },
     { name = "mypy", specifier = ">=1.15" },
     { name = "pytest", specifier = ">=8.3" },
     { name = "ruff", specifier = ">=0.9" },

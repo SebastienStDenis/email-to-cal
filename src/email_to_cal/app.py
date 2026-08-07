@@ -14,6 +14,7 @@ from .gcal import CalendarClient, CredentialsExpired, build_event_body
 from .llm import Extractor, cache_key
 from .mailbox import AuthenticationFatal, Mailbox, sleep_with_backoff
 from .mime import parse_email
+from .notify import Notifier
 from .schema import EmailDocument, ExtractedEvent, ExtractionResult
 from .store import Store
 
@@ -46,6 +47,7 @@ class Pipeline:
         self._store = store
         self._extractor = extractor
         self._calendar = calendar
+        self.notifier = Notifier(settings)
 
     def process(self, raw: bytes, *, skip_seen: bool = True) -> Outcome:
         settings = self._settings
@@ -126,6 +128,7 @@ class Pipeline:
         self._store.record_event(event_id, doc.message_id, calendar_id, event.title)
         log.info("created %r on %r (%s)", event.title, calendar_name, event_id)
         outcome.created.append((calendar_name, event.title))
+        self.notifier.created(event.title, calendar_name)
 
 
 def run(settings: Settings, stopping: threading.Event) -> None:
@@ -166,8 +169,9 @@ def run(settings: Settings, stopping: threading.Event) -> None:
                     # punishes.
                     attempt = 0
                     mailbox.idle(box, stopping)
-            except AuthenticationFatal:
+            except AuthenticationFatal as exc:
                 log.critical("fatal authentication failure", exc_info=True)
+                pipeline.notifier.fatal(str(exc))
                 raise
             except Exception:
                 log.warning("mailbox loop failed; will reconnect", exc_info=True)
@@ -198,6 +202,7 @@ def _process_one(pipeline: Pipeline, mailbox: Mailbox, store: Store, uid: int, r
         raise AuthenticationFatal("Google credentials are no longer usable") from None
     except Exception as exc:
         log.error("failed to process UID %d", uid, exc_info=True)
+        pipeline.notifier.failure(f"UID {uid}: {type(exc).__name__}: {exc}")
         mailbox.ack(uid, error=f"{type(exc).__name__}: {exc}")
     else:
         mailbox.ack(uid)

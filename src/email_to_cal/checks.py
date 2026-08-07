@@ -9,6 +9,7 @@ import anthropic
 from .config import Settings
 from .gcal import CalendarClient
 from .mailbox import Mailbox
+from .notify import validate_keys
 from .store import Store
 
 
@@ -60,6 +61,12 @@ def run_checks(settings: Settings) -> list[CheckResult]:
             results.append(CheckResult("anthropic", True, f"{settings.anthropic_model} reachable"))
         except Exception as exc:
             results.append(CheckResult("anthropic", False, str(exc)))
+
+        if settings.pushover_user and settings.pushover_token:
+            try:
+                results.append(CheckResult("pushover", True, validate_keys(settings)))
+            except Exception as exc:
+                results.append(CheckResult("pushover", False, str(exc)))
 
         try:
             calendar = CalendarClient(settings, store)
