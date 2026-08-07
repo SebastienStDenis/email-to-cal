@@ -91,9 +91,9 @@ Open [http://127.0.0.1:8080](http://127.0.0.1:8080) and the portal takes it from
 3. **Status** - watch it work: watcher state, recent events, failures, and a "Run
    checks" button that exercises IMAP, Anthropic, and Google end to end.
 
-New installs start in **dry run**: the service logs exactly what it would put on your
-calendar without writing anything. Watch a day of mail, tune the category descriptions,
-then switch dry run off in Settings.
+New installs start in **preview mode**: the service logs exactly what it would put on
+your calendar without writing anything. Watch a day of mail, tune the category
+descriptions, then switch preview mode off in Settings.
 
 Everything lands in `data/` inside your checkout: the configuration (`config.json`),
 the Google token, and the state database. The other commands read the same

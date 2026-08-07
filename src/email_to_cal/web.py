@@ -13,6 +13,7 @@ import logging
 import secrets
 import threading
 import time
+from collections.abc import Mapping
 from typing import Any
 from zoneinfo import available_timezones
 
@@ -118,7 +119,7 @@ class Supervisor:
             run(settings, stopping)
         except Exception as exc:
             log.exception("watcher stopped on an error")
-            self.error = f"{type(exc).__name__}: {exc}"
+            self.error = str(exc) or type(exc).__name__
 
 
 def form_values(settings: Settings) -> dict[str, Any]:
@@ -160,6 +161,13 @@ def save_config(values: dict[str, Any]) -> None:
     scratch.write_text(json.dumps(payload, indent=2) + "\n")
     scratch.chmod(0o600)
     scratch.replace(CONFIG_FILE)
+
+
+def _readable_error(err: Mapping[str, Any]) -> str:
+    """One pydantic error as a sentence a person can act on."""
+    field = " ".join(str(loc) for loc in err["loc"]).replace("_", " ")
+    message = str(err["msg"]).removeprefix("Value error, ")
+    return f"{field}: {message}" if field else message
 
 
 def _oauth_redirect_uri() -> str:
@@ -208,10 +216,7 @@ def create_app(supervisor: Supervisor) -> Flask:
         try:
             save_config(values)
         except ValidationError as exc:
-            errors = [
-                f"{' / '.join(str(loc) for loc in err['loc'])}: {err['msg']}"
-                for err in exc.errors()
-            ]
+            errors = [_readable_error(err) for err in exc.errors()]
             return render_template(
                 "settings.html",
                 values=values,

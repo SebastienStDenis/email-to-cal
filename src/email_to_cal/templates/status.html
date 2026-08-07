@@ -1,64 +1,85 @@
 {% extends "base.html" %}
 {% block content %}
 
+<h1>Status</h1>
+<p class="page-sub">What email-to-cal is doing right now.</p>
+
 <section class="card">
-  <h2>Watcher
-    {% if running %}<span class="pill ok">running</span>
-    {% elif missing %}<span class="pill warn">waiting for configuration</span>
-    {% else %}<span class="pill bad">stopped</span>{% endif %}
-    {% if dry_run %}<span class="pill warn">dry run</span>{% endif %}
-  </h2>
-  {% if missing %}
-  <p class="hint">Still needed: {{ missing | join(', ') }} &mdash;
-    <a href="{{ url_for('settings_page') }}">finish setup</a>.</p>
-  {% elif error %}
-  <p class="hint">Stopped on an error: {{ error }}</p>
-  {% else %}
-  <p class="hint">Last heartbeat: {{ beat_age | ago }}. The watcher heartbeats at least
-    once per IDLE cycle.</p>
+  <div class="card-head">
+    <h2>
+      {% if running %}Watching your inbox
+        <span class="badge ok">active</span>
+        {% if dry_run %}<span class="badge warn">preview mode</span>{% endif %}
+      {% elif missing %}Almost ready
+        <span class="badge warn">setup needed</span>
+      {% else %}Stopped
+        <span class="badge bad">needs attention</span>
+      {% endif %}
+    </h2>
+    {% if running %}
+    <p class="card-sub">
+      {% if beat_age is none %}Getting started&hellip;
+      {% else %}Last activity {{ beat_age | ago }}.{% endif %}
+      New bookings are picked up within moments of arriving.
+    </p>
+    {% elif missing %}
+    <p class="card-sub">Still to fill in: {{ missing | join(', ') }}.
+      <a href="{{ url_for('settings_page') }}">Finish setup</a></p>
+    {% elif error %}
+    <p class="card-sub">{{ error }}</p>
+    <p class="card-sub">Correct the details in
+      <a href="{{ url_for('settings_page') }}">Settings</a>, then restart.</p>
+    {% endif %}
+  </div>
+  {% if running and dry_run %}
+  <p class="hint" style="margin: 0 0 1rem;">Preview mode is on: nothing is written to
+    your calendar yet. When the results below look right, switch it off in
+    <a href="{{ url_for('settings_page') }}">Settings</a>.</p>
   {% endif %}
-  <div class="actions">
-    <form method="post" action="{{ url_for('restart') }}">
-      <button class="small">Restart watcher</button>
-    </form>
+  <div class="actions" style="margin-top: 0;">
     <form method="post" action="{{ url_for('check') }}">
-      <button class="small">Run checks</button>
+      <button class="btn-secondary btn-sm">Check connections</button>
+    </form>
+    <form method="post" action="{{ url_for('restart') }}">
+      <button class="btn-ghost btn-sm">Restart</button>
     </form>
   </div>
 </section>
 
 <section class="card">
-  <h2>Recent events</h2>
+  <div class="card-head">
+    <h2>Added to your calendar</h2>
+  </div>
   {% if events %}
   <table>
-    <tr><th>Event</th><th>Calendar</th><th>Created</th></tr>
+    <tr><th>Event</th><th style="text-align: right;">When</th></tr>
     {% for summary, calendar_id, age in events %}
     <tr>
       <td>{{ summary or '(untitled)' }}</td>
-      <td class="muted">{{ calendar_id }}</td>
-      <td class="muted">{{ age | ago }}</td>
+      <td class="muted" style="text-align: right; white-space: nowrap;">{{ age | ago }}</td>
     </tr>
     {% endfor %}
   </table>
   {% else %}
-  <p class="hint">Nothing created yet. With dry run on, would-be events appear in the
-    container logs instead.</p>
+  <p class="empty">Nothing yet. New bookings will show up here.
+    {% if dry_run %}<br>Preview mode only records would-be events in the log.{% endif %}</p>
   {% endif %}
 </section>
 
 {% if failures %}
 <section class="card">
-  <h2>Failed messages</h2>
-  <p class="hint">These were retried and written off; the watcher moved on. Investigate
-    with the <code>replay</code> command.</p>
+  <div class="card-head">
+    <h2>Couldn't be read <span class="badge">{{ failures | length }}</span></h2>
+    <p class="card-sub">These emails failed a few times, so they were set aside and
+      everything else carried on.</p>
+  </div>
   <table>
-    <tr><th>Folder</th><th>UID</th><th>Attempts</th><th>Last error</th></tr>
+    <tr><th>Where</th><th>Tries</th><th>What happened</th></tr>
     {% for folder, uidvalidity, uid, attempts, error in failures %}
     <tr>
-      <td>{{ folder }}</td>
-      <td>{{ uid }}</td>
+      <td style="white-space: nowrap;">{{ folder }} #{{ uid }}</td>
       <td>{{ attempts }}</td>
-      <td class="muted">{{ error[:160] }}</td>
+      <td class="muted">{{ error[:140] }}</td>
     </tr>
     {% endfor %}
   </table>

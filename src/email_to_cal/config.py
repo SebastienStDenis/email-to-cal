@@ -121,7 +121,9 @@ class Settings(BaseSettings):
         try:
             ZoneInfo(value)
         except ZoneInfoNotFoundError as exc:
-            raise ValueError(f"DEFAULT_TIMEZONE {value!r} is not a known IANA zone") from exc
+            raise ValueError(
+                f"{value!r} is not a recognised time zone; use a name like Europe/Zurich"
+            ) from exc
         return value
 
     @model_validator(mode="after")

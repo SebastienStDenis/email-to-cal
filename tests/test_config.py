@@ -32,7 +32,7 @@ def test_empty_category_description_is_rejected() -> None:
 
 
 def test_bad_default_timezone_is_rejected() -> None:
-    with pytest.raises(ValidationError, match="not a known IANA zone"):
+    with pytest.raises(ValidationError, match="not a recognised time zone"):
         Settings(default_timezone="Europe/Atlantis")
 
 

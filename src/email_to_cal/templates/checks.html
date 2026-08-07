@@ -1,22 +1,33 @@
 {% extends "base.html" %}
 {% block content %}
 
+{% set names = {
+  'state db': 'Storage',
+  'imap': 'Apple Mail',
+  'anthropic': 'Claude',
+  'google': 'Google Calendar',
+  'failed messages': 'Set-aside emails',
+} %}
+
+<h1>Connection check</h1>
+<p class="page-sub">Each service was just contacted for real.</p>
+
 <section class="card">
-  <h2>Checks</h2>
-  <p class="hint">Live results against IMAP, Anthropic, and Google Calendar.</p>
   <table>
-    <tr><th></th><th>Check</th><th>Detail</th></tr>
     {% for result in results %}
     <tr>
-      <td>{% if result.ok %}<span class="pill ok">ok</span>
-          {% else %}<span class="pill bad">failed</span>{% endif %}</td>
-      <td>{{ result.name }}</td>
+      <td style="white-space: nowrap; width: 1%;">
+        {% if result.ok %}<span class="badge ok">ok</span>
+        {% else %}<span class="badge bad">failed</span>{% endif %}
+      </td>
+      <td style="white-space: nowrap; font-weight: 550;">
+        {{ names.get(result.name, result.name) }}</td>
       <td class="muted">{{ result.detail }}</td>
     </tr>
     {% endfor %}
   </table>
   <div class="actions">
-    <a href="{{ url_for('status_page') }}">Back to status</a>
+    <a class="btn btn-secondary btn-sm" href="{{ url_for('status_page') }}">Back to Status</a>
   </div>
 </section>
 

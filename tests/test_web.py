@@ -78,7 +78,7 @@ def test_unchecked_checkboxes_come_back_false(client: FlaskClient) -> None:
 def test_invalid_input_rerenders_the_form_and_writes_nothing(client: FlaskClient) -> None:
     reply = client.post("/settings", data={**FORM, "default_timezone": "Europe/Atlantis"})
     assert reply.status_code == 200
-    assert b"not a known IANA zone" in reply.data
+    assert b"not a recognised time zone" in reply.data
     assert not Path(CONFIG_FILE).exists()
 
 
