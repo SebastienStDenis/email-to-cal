@@ -168,6 +168,20 @@
     overflow-wrap: anywhere; }
   tr:last-child td { border-bottom: none; }
   .muted { color: var(--muted); }
+  .chips { display: flex; flex-wrap: wrap; gap: .4rem; }
+  .chips:not(:empty) { margin-bottom: .5rem; }
+  .chip {
+    display: inline-flex; align-items: center; gap: .1rem;
+    padding: .15rem .2rem .15rem .65rem; border: 1px solid var(--border);
+    border-radius: 99px; background: var(--bg); font-size: .85rem;
+  }
+  .chip button {
+    border: none; background: none; cursor: pointer; color: var(--muted);
+    padding: 0 .4rem; font-size: 1rem; line-height: 1;
+  }
+  .chip button:hover { color: var(--bad); }
+  .chip-add { display: flex; gap: .5rem; }
+  .chip-add input { flex: 1; }
   .empty { color: var(--muted); padding: 1.4rem 0 .4rem; text-align: center; }
 
   /* Disclosure */

@@ -15,7 +15,7 @@ FORM = {
     "imap_username": "test@icloud.com",
     "imap_password": "xxxx-xxxx",
     "imap_folder": "INBOX",
-    "sweep_folders": "Archive, Sent",
+    "sweep_folder": ["Archive", "Sent"],
     "anthropic_api_key": "sk-ant-test",
     "min_confidence": "0.8",
     "google_client_id": "abc.apps.googleusercontent.com",
@@ -60,9 +60,14 @@ def test_saving_the_form_writes_config_json_that_settings_pick_up(client: FlaskC
     assert settings.imap_host == "imap.mail.me.com"
 
 
-def test_swept_folder_names_keep_their_inner_spaces(client: FlaskClient) -> None:
-    client.post("/settings", data={**FORM, "sweep_folders": "Archive, Deleted Messages"})
-    assert Settings().sweep_folders == ["Archive", "Deleted Messages"]
+def test_swept_folder_names_may_contain_spaces_and_commas(client: FlaskClient) -> None:
+    """Each chip is its own form field, so no character in a folder name is special."""
+    folders = ["Deleted Messages", "Receipts, Travel"]
+    client.post("/settings", data={**FORM, "sweep_folder": folders})
+    assert Settings().sweep_folders == folders
+
+    page = client.get("/settings")
+    assert b"Receipts, Travel" in page.data
 
 
 def test_settings_page_offers_timezone_suggestions(client: FlaskClient) -> None:

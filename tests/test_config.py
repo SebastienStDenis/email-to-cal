@@ -47,6 +47,13 @@ def test_sweep_folders_parse_from_a_comma_separated_env_value(
     assert Settings().sweep_folders == ["Archive", "Sent"]
 
 
+def test_sweep_folder_env_values_may_quote_a_name_containing_a_comma(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SWEEP_FOLDERS", '"Receipts, Travel", Archive')
+    assert Settings().sweep_folders == ["Receipts, Travel", "Archive"]
+
+
 def test_config_json_is_read_but_the_environment_overrides_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

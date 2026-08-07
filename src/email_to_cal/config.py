@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -110,9 +111,11 @@ class Settings(BaseSettings):
     @classmethod
     def _parse_sweep_folders(cls, value: Any) -> Any:
         # Comma-separated, because iCloud folder names contain spaces ("Deleted Messages")
-        # far more often than commas.
+        # far more often than commas. A name that does contain a comma is written
+        # CSV-style, wrapped in double quotes: "Receipts, Travel", Archive
         if isinstance(value, str):
-            return [name.strip() for name in value.split(",") if name.strip()]
+            row = next(csv.reader([value], skipinitialspace=True), [])
+            return [name.strip() for name in row if name.strip()]
         return value
 
     @field_validator("default_timezone")

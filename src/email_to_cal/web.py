@@ -126,9 +126,7 @@ class Supervisor:
 
 def form_values(settings: Settings) -> dict[str, Any]:
     """Settings as the template renders them."""
-    values = settings.model_dump(mode="json", include=set(FORM_FIELDS))
-    values["sweep_folders"] = ", ".join(settings.sweep_folders)
-    return values
+    return settings.model_dump(mode="json", include=set(FORM_FIELDS))
 
 
 def parse_form(form: Any) -> dict[str, Any]:
@@ -137,6 +135,9 @@ def parse_form(form: Any) -> dict[str, Any]:
     for name in FORM_FIELDS:
         if name in ("enable_vision", "dry_run"):
             values[name] = name in form
+        elif name == "sweep_folders":
+            # One hidden input per chip, so folder names need no delimiter at all.
+            values[name] = [f.strip() for f in form.getlist("sweep_folder") if f.strip()]
         elif name == "categories":
             values[name] = [
                 {"name": n, "description": d, "calendar": c}
