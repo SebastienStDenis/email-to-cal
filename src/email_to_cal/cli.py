@@ -67,9 +67,7 @@ def _cmd_serve(_settings: Settings, args: argparse.Namespace) -> int:
 
     log.info("portal listening on http://%s:%d", args.host, args.port)
     try:
-        create_app(supervisor).run(
-            host=args.host, port=args.port, threaded=True, debug=args.debug
-        )
+        create_app(supervisor).run(host=args.host, port=args.port, threaded=True, debug=args.debug)
     finally:
         supervisor.stop()
     return 0
