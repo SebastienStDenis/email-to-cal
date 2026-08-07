@@ -79,6 +79,11 @@ class Settings(BaseSettings):
     # A negative value would make every attachment look oversized and silently vanish.
     max_attachment_mb: float = Field(default=8.0, gt=0)
     min_confidence: float = Field(default=0.75, ge=0.0, le=1.0)
+    # The deterministic event id only catches the same email again; a reminder or an
+    # updated itinerary restates the same booking under a fresh Message-ID. An event
+    # this close in time with a near-identical title or the same booking reference is
+    # treated as already on the calendar. 0 switches the check off.
+    dedup_window_minutes: int = Field(default=60, ge=0)
 
     # The OAuth client from the Google Cloud console (Desktop app type): two strings,
     # no downloaded credentials file.

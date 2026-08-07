@@ -161,6 +161,13 @@
           <input type="text" id="max_attachment_mb" name="max_attachment_mb"
                  value="{{ values.max_attachment_mb }}">
         </div>
+        <div>
+          <label for="dedup_window_minutes">Duplicate window (minutes)</label>
+          <input type="text" id="dedup_window_minutes" name="dedup_window_minutes"
+                 value="{{ values.dedup_window_minutes }}">
+          <p class="hint">A similar event starting this close on the same calendar is
+            not created again. 0 turns the check off.</p>
+        </div>
         <div class="switch" style="align-self: end;">
           <input type="checkbox" id="enable_vision" name="enable_vision"
                  {% if values.enable_vision %}checked{% endif %}>
