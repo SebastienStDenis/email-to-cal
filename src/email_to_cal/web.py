@@ -21,6 +21,7 @@ from zoneinfo import available_timezones
 from flask import Flask, Response, flash, redirect, render_template, request, session, url_for
 from google_auth_oauthlib.flow import Flow
 from pydantic import ValidationError
+from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.wrappers import Response as WerkzeugResponse
 
 from .app import run
@@ -177,6 +178,9 @@ def _oauth_redirect_uri() -> str:
 
 def create_app(supervisor: Supervisor) -> Flask:
     app = Flask(__name__)
+    # Honour X-Forwarded-Proto/Host from a fronting proxy (tailscale serve, caddy), so
+    # the Google redirect URI comes out as the https address the browser is really on.
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1, x_port=1)  # type: ignore[method-assign]
     # Sessions only carry flashes and the OAuth state token, so a key that rotates on
     # restart costs nothing.
     app.secret_key = secrets.token_hex(32)
@@ -234,16 +238,19 @@ def create_app(supervisor: Supervisor) -> Flask:
                 flash("Enter the Google client id and secret to connect.")
                 return redirect(url_for("settings_page"))
             parts = urlsplit(request.url)
-            if parts.hostname not in ("localhost", "127.0.0.1", "::1"):
-                # Google only redirects desktop clients back to loopback addresses;
-                # letting this through ends in a cryptic policy-violation page.
+            local = parts.hostname in ("localhost", "127.0.0.1", "::1")
+            if not local and parts.scheme != "https":
+                # Google accepts loopback redirects (Desktop clients) and registered
+                # https redirects (Web application clients); a plain-http remote host
+                # is neither, and letting it through ends on a cryptic policy page.
                 port = parts.port or 80
                 flash(
-                    "Your settings were saved, but Google can only connect while this "
-                    f"page is open as localhost, not {parts.hostname}. Run "
+                    "Your settings were saved, but Google cannot connect from "
+                    f"http://{parts.hostname}. Either run "
                     f"'ssh -L {port}:localhost:{port} {parts.hostname}' on your "
-                    f"computer, open http://localhost:{port}/settings, and click "
-                    "Connect there. This is only needed once."
+                    f"computer and connect from http://localhost:{port}/settings "
+                    "(one time), or serve this page over HTTPS and use a Web "
+                    "application client; see the Google section's walkthrough."
                 )
                 return redirect(url_for("settings_page"))
             flow = Flow.from_client_config(

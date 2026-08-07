@@ -90,11 +90,11 @@ def test_connect_button_saves_the_form_then_redirects_to_google(client: FlaskCli
     assert Settings().imap_username == "test@icloud.com"
 
 
-def test_connect_from_a_remote_hostname_explains_instead_of_calling_google(
+def test_connect_from_a_remote_http_hostname_explains_instead_of_calling_google(
     client: FlaskClient,
 ) -> None:
-    """Google rejects non-loopback redirects with a cryptic policy page; the portal
-    must catch it first and say what to do."""
+    """Google rejects plain-http non-loopback redirects with a cryptic policy page;
+    the portal must catch it first and say what to do."""
     reply = client.post(
         "/settings", data={**FORM, "action": "connect"}, base_url="http://zoloft:8484"
     )
@@ -105,6 +105,22 @@ def test_connect_from_a_remote_hostname_explains_instead_of_calling_google(
 
     follow = client.get("/settings", base_url="http://zoloft:8484")
     assert b"ssh -L 8484:localhost:8484 zoloft" in follow.data
+
+
+def test_connect_over_remote_https_goes_to_google_with_that_redirect(
+    client: FlaskClient,
+) -> None:
+    """A registered https redirect (Web application client) is valid, so an HTTPS
+    page - e.g. behind tailscale serve - connects without any tunnel."""
+    reply = client.post(
+        "/settings",
+        data={**FORM, "action": "connect"},
+        base_url="https://zoloft.tail1234.ts.net",
+    )
+    assert reply.status_code == 302
+    location = reply.headers["Location"]
+    assert location.startswith("https://accounts.google.com/")
+    assert "redirect_uri=https%3A%2F%2Fzoloft.tail1234.ts.net%2Fgoogle%2Fcallback" in location
 
 
 def test_connect_without_a_client_id_returns_to_settings(client: FlaskClient) -> None:

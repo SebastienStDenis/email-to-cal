@@ -202,11 +202,18 @@
             Credentials &rarr; OAuth client ID &rarr; Desktop app</strong>, then copy the
             client id and secret into the fields above.</li>
         </ol>
+        <p>Reaching this page over <strong>HTTPS</strong> on a server (for example
+          through <code>tailscale serve</code>)? In step 4 pick <strong>Web
+          application</strong> instead of Desktop app and add
+          <code>{{ request.url_root.rstrip('/') }}/google/callback</code> as an
+          authorised redirect URI; then connecting works right from here, no tunnel
+          needed.</p>
       </div>
     </details>
     <p class="hint">Connecting saves your settings and opens Google's permission screen.
       Open this page as <strong>localhost</strong> (through an SSH tunnel if it runs on
-      a server) so Google can send you back here.</p>
+      a server) or over HTTPS with a Web application client, so Google can send you
+      back here.</p>
     <div class="actions">
       <button type="submit" name="action" value="connect" class="btn-secondary btn-sm">
         {% if google_connected %}Reconnect Google Calendar{% else %}Connect Google Calendar{% endif %}
