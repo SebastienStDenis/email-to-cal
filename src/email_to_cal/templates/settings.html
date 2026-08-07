@@ -287,6 +287,47 @@
 
   <section class="card">
     <div class="card-head">
+      <h2>Phone notifications
+        {% if values.pushover_user and values.pushover_token %}<span class="badge ok">on</span>{% endif %}
+      </h2>
+      <p class="card-sub">Optional pushes to your phone through
+        <a href="https://pushover.net" target="_blank" rel="noopener">Pushover</a>.</p>
+    </div>
+    <div class="grid">
+      <div>
+        <label for="pushover_user">User key</label>
+        <input type="text" id="pushover_user" name="pushover_user"
+               value="{{ values.pushover_user }}">
+        <p class="hint">Shown on your
+          <a href="https://pushover.net" target="_blank" rel="noopener">pushover.net</a>
+          dashboard once you're signed in.</p>
+      </div>
+      <div>
+        <label for="pushover_token">Application token</label>
+        <input type="password" id="pushover_token" name="pushover_token"
+               value="{{ values.pushover_token }}">
+        <p class="hint">Create an application for this service at
+          <a href="https://pushover.net/apps/build" target="_blank"
+             rel="noopener">pushover.net/apps/build</a> and copy its API token.</p>
+      </div>
+      <div class="switch">
+        <input type="checkbox" id="pushover_notify_events" name="pushover_notify_events"
+               {% if values.pushover_notify_events %}checked{% endif %}>
+        <label for="pushover_notify_events">New calendar events
+          <span class="hint">Delivered quietly, without a sound.</span></label>
+      </div>
+      <div class="switch">
+        <input type="checkbox" id="pushover_notify_errors" name="pushover_notify_errors"
+               {% if values.pushover_notify_errors %}checked{% endif %}>
+        <label for="pushover_notify_errors">Errors
+          <span class="hint">Emails that fail to process, and anything that stops the
+            service, like an expired app password.</span></label>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
       <h2>Preferences</h2>
     </div>
     <div class="grid">

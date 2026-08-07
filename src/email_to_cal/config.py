@@ -92,6 +92,13 @@ class Settings(BaseSettings):
     default_calendar: str = "email-to-cal events"
     default_timezone: str = "UTC"
 
+    # Optional phone pushes via Pushover (https://pushover.net); a no-op until both
+    # keys are configured.
+    pushover_user: str = ""
+    pushover_token: str = ""
+    pushover_notify_events: bool = True
+    pushover_notify_errors: bool = True
+
     state_db: Path = Path("data/state.sqlite")
     # Safe by default: a fresh install logs what it would create until switched off.
     dry_run: bool = True

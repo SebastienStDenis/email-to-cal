@@ -12,6 +12,7 @@ dependencies = [
     "google-api-python-client>=2.190",
     "google-auth-oauthlib>=1.2",
     "html2text>=2025.4.15",
+    "httpx>=0.28",
     "icalendar>=6.3",
     "imap-tools>=1.15",
     "pydantic>=2.11",
@@ -23,8 +24,6 @@ email-to-cal = "email_to_cal.cli:main"
 
 [dependency-groups]
 dev = [
-    # Imported directly by tests to construct Anthropic error responses.
-    "httpx>=0.28",
     "mypy>=1.15",
     "pytest>=8.3",
     "ruff>=0.9",

@@ -206,6 +206,22 @@ Two settings control how eager the service is:
 Model responses are cached in the state database keyed by content, so replays and
 restarts never re-bill you for the same email.
 
+## Phone notifications
+
+Optional pushes through [Pushover](https://pushover.net). Register an application for
+this service at [pushover.net/apps/build](https://pushover.net/apps/build), then enter
+its API token and your user key in the portal.
+
+Notifications are sent at the priority they deserve: created events arrive silently,
+per-message failures arrive as a normal push, and anything that stops the service - an
+expired app password, a rejected API key - arrives at high priority, because mail goes
+unread until someone acts. Created-event and error notifications can each be switched
+off in the portal; sounds and quiet hours are the Pushover app's job.
+
+Delivery is best-effort. A Pushover outage is logged and ignored, never allowed to
+stall mail processing. `check` validates the keys against Pushover's validation
+endpoint without sending anything.
+
 ## Operational notes
 
 - **One IMAP connection, always.** iCloud allows only a handful per account and shares

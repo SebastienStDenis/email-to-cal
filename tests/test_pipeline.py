@@ -226,6 +226,32 @@ def test_dry_run_writes_nothing(settings: Settings) -> None:
     store.close()
 
 
+def test_created_events_notify_the_phone_but_dry_runs_do_not(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pushes: list[dict[str, Any]] = []
+
+    def record(url: str, *, data: dict[str, Any], timeout: float) -> httpx.Response:
+        pushes.append(data)
+        return httpx.Response(200, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr("email_to_cal.notify.httpx.post", record)
+    settings.pushover_user = "u123"
+    settings.pushover_token = "a456"
+    result = ExtractionResult(
+        is_committed=True, gate_reasoning="Confirmed.", events=[concert_event()]
+    )
+    pipeline, _, _, store = build(settings, result)
+
+    pipeline.process(fixture_bytes("concert_ics.eml"))
+    assert [push["message"] for push in pushes] == ["Radiohead at The O2 on Music"]
+
+    settings.dry_run = True
+    pipeline.process(fixture_bytes("concert_ics.eml"), skip_seen=False)
+    assert len(pushes) == 1
+    store.close()
+
+
 def test_bad_api_key_stops_the_service_instead_of_dropping_mail(settings: Settings) -> None:
     """A per-message catch would silently bin every email until someone noticed."""
 

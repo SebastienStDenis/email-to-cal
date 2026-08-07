@@ -54,6 +54,10 @@ FORM_FIELDS = [
     "default_calendar",
     "default_timezone",
     "categories",
+    "pushover_user",
+    "pushover_token",
+    "pushover_notify_events",
+    "pushover_notify_errors",
     "dry_run",
     "log_level",
 ]
@@ -133,7 +137,7 @@ def parse_form(form: Any) -> dict[str, Any]:
     """The submitted form as Settings keyword arguments, still unvalidated."""
     values: dict[str, Any] = {}
     for name in FORM_FIELDS:
-        if name in ("enable_vision", "dry_run"):
+        if name in ("enable_vision", "dry_run", "pushover_notify_events", "pushover_notify_errors"):
             values[name] = name in form
         elif name == "sweep_folders":
             # One hidden input per chip, so folder names need no delimiter at all.
