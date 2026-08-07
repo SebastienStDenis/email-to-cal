@@ -86,7 +86,9 @@ class Settings(BaseSettings):
     # Relative to the working directory, so one config works both locally and in the
     # container, where WORKDIR is /app and the volume mounts at /app/data.
     google_token_file: Path = Path("data/token.json")
-    default_calendar: str = "primary"
+    # Its own calendar by default, created on first run; "primary" writes to the
+    # user's main calendar instead.
+    default_calendar: str = "email-to-cal events"
     default_timezone: str = "UTC"
 
     state_db: Path = Path("data/state.sqlite")

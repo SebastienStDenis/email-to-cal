@@ -65,7 +65,7 @@ def test_swept_folder_names_keep_their_inner_spaces(client: FlaskClient) -> None
 
 def test_settings_page_offers_timezone_suggestions(client: FlaskClient) -> None:
     page = client.get("/settings")
-    assert b'list="timezones"' in page.data
+    assert b"timezone-suggestions" in page.data
     assert b"Europe/Zurich" in page.data
 
 
@@ -80,6 +80,21 @@ def test_invalid_input_rerenders_the_form_and_writes_nothing(client: FlaskClient
     assert reply.status_code == 200
     assert b"not a known IANA zone" in reply.data
     assert not Path(CONFIG_FILE).exists()
+
+
+def test_connect_button_saves_the_form_then_redirects_to_google(client: FlaskClient) -> None:
+    reply = client.post("/settings", data={**FORM, "action": "connect"})
+    assert reply.status_code == 302
+    assert reply.headers["Location"].startswith("https://accounts.google.com/")
+    # The form was saved on the way out, so nothing is lost during the consent trip.
+    assert Settings().imap_username == "test@icloud.com"
+
+
+def test_connect_without_a_client_id_returns_to_settings(client: FlaskClient) -> None:
+    form = {key: value for key, value in FORM.items() if not key.startswith("google_")}
+    reply = client.post("/settings", data={**form, "action": "connect"})
+    assert reply.status_code == 302
+    assert reply.headers["Location"].endswith("/settings")
 
 
 def test_unconfigured_service_redirects_home_to_settings(client: FlaskClient) -> None:

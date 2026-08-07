@@ -221,24 +221,23 @@ def create_app(supervisor: Supervisor) -> Flask:
                 timezones=sorted(available_timezones()),
             )
         supervisor.restart()
-        flash("Settings saved.")
         settings = Settings()
+
+        if request.form.get("action") == "connect":
+            if not settings.google_client_id or not settings.google_client_secret:
+                flash("Enter the Google client id and secret to connect.")
+                return redirect(url_for("settings_page"))
+            flow = Flow.from_client_config(
+                client_config(settings), scopes=SCOPES, redirect_uri=_oauth_redirect_uri()
+            )
+            auth_url, state = flow.authorization_url(access_type="offline", prompt="consent")
+            session["oauth_state"] = state
+            return redirect(auth_url)
+
+        flash("Settings saved.")
         if missing_for_start(settings):
             return redirect(url_for("settings_page"))
         return redirect(url_for("status_page"))
-
-    @app.post("/google/connect")
-    def google_connect() -> WerkzeugResponse:
-        settings = Settings()
-        if not settings.google_client_id or not settings.google_client_secret:
-            flash("Save a Google client id and secret first.")
-            return redirect(url_for("settings_page"))
-        flow = Flow.from_client_config(
-            client_config(settings), scopes=SCOPES, redirect_uri=_oauth_redirect_uri()
-        )
-        auth_url, state = flow.authorization_url(access_type="offline", prompt="consent")
-        session["oauth_state"] = state
-        return redirect(auth_url)
 
     @app.get("/google/callback")
     def google_callback() -> WerkzeugResponse:

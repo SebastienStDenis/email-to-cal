@@ -166,12 +166,11 @@
         </ol>
       </div>
     </details>
-    <p class="hint">Save first, then connect. Connecting opens Google's consent screen
-      and needs this page to be open as <strong>localhost</strong> (use an SSH tunnel
-      for a remote server), because Google returns the authorisation to a loopback
-      address.</p>
+    <p class="hint">Connecting saves your settings and opens Google's consent screen. It
+      needs this page to be open as <strong>localhost</strong> (use an SSH tunnel for a
+      remote server), because Google returns the authorisation to a loopback address.</p>
     <div class="actions">
-      <button form="google-connect" class="small">
+      <button type="submit" name="action" value="connect" class="small">
         {% if google_connected %}Reconnect Google Calendar{% else %}Connect Google Calendar{% endif %}
       </button>
     </div>
@@ -184,17 +183,17 @@
         <label for="default_calendar">Default calendar</label>
         <input type="text" id="default_calendar" name="default_calendar"
                value="{{ values.default_calendar }}">
-        <p class="hint">Where anything that matches no category goes. "primary" is your
-          main calendar.</p>
+        <p class="hint">Where anything that matches no category goes; created if it does
+          not exist. Enter "primary" to use your main Google calendar instead.</p>
       </div>
       <div>
         <label for="default_timezone">Default timezone</label>
-        <input type="text" id="default_timezone" name="default_timezone"
-               value="{{ values.default_timezone }}" placeholder="Europe/Zurich"
-               list="timezones" autocomplete="off">
-        <datalist id="timezones">
-          {% for zone in timezones %}<option value="{{ zone }}">{% endfor %}
-        </datalist>
+        <div class="autocomplete">
+          <input type="text" id="default_timezone" name="default_timezone"
+                 value="{{ values.default_timezone }}" placeholder="Europe/Zurich"
+                 autocomplete="off">
+          <div class="suggestions" id="timezone-suggestions"></div>
+        </div>
         <p class="hint">An IANA name like Europe/Zurich or America/New_York; start
           typing for suggestions. Used when an email gives a time but no resolvable
           place.</p>
@@ -247,8 +246,6 @@
   </div>
 </form>
 
-<form id="google-connect" method="post" action="{{ url_for('google_connect') }}"></form>
-
 <template id="category-template">
   <div class="category-row">
     <input type="text" name="category_name" placeholder="Name">
@@ -262,6 +259,53 @@
   document.getElementById('add-category').addEventListener('click', () => {
     const template = document.getElementById('category-template');
     document.getElementById('categories').append(template.content.cloneNode(true));
+  });
+
+  const ZONES = {{ timezones | tojson }};
+  const tzInput = document.getElementById('default_timezone');
+  const tzList = document.getElementById('timezone-suggestions');
+  let tzActive = -1;
+
+  function hideZones() {
+    tzList.style.display = 'none';
+    tzActive = -1;
+  }
+
+  function showZones() {
+    const query = tzInput.value.trim().toLowerCase();
+    const matches = query
+      ? ZONES.filter(zone => zone.toLowerCase().includes(query)).slice(0, 12)
+      : [];
+    tzList.replaceChildren(...matches.map(zone => {
+      const item = document.createElement('div');
+      item.textContent = zone;
+      // mousedown, not click: it fires before the input's blur hides the list.
+      item.addEventListener('mousedown', () => { tzInput.value = zone; hideZones(); });
+      return item;
+    }));
+    tzList.style.display = matches.length ? 'block' : 'none';
+    tzActive = -1;
+  }
+
+  tzInput.addEventListener('input', showZones);
+  tzInput.addEventListener('focus', showZones);
+  tzInput.addEventListener('blur', hideZones);
+  tzInput.addEventListener('keydown', event => {
+    const items = tzList.children;
+    if (event.key === 'Escape') { hideZones(); return; }
+    if (!items.length) return;
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      tzActive = event.key === 'ArrowDown'
+        ? (tzActive + 1) % items.length
+        : (tzActive - 1 + items.length) % items.length;
+      [...items].forEach((item, i) => item.classList.toggle('active', i === tzActive));
+      items[tzActive].scrollIntoView({ block: 'nearest' });
+    } else if (event.key === 'Enter' && tzActive >= 0) {
+      event.preventDefault();
+      tzInput.value = items[tzActive].textContent;
+      hideZones();
+    }
   });
 </script>
 
