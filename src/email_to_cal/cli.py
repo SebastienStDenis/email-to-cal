@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import signal
 import sys
 import threading
@@ -52,7 +53,10 @@ def _cmd_serve(_settings: Settings, args: argparse.Namespace) -> int:
     from .web import Supervisor, create_app
 
     supervisor = Supervisor()
-    supervisor.restart()
+    # Under the debug reloader the process runs twice (a file watcher and the actual
+    # server, marked by WERKZEUG_RUN_MAIN); only the server may own a mail watcher.
+    if not args.debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        supervisor.restart()
 
     def _stop(signum: int, _frame: types.FrameType | None) -> None:
         log.info("received signal %d; shutting down", signum)
@@ -63,7 +67,9 @@ def _cmd_serve(_settings: Settings, args: argparse.Namespace) -> int:
 
     log.info("portal listening on http://%s:%d", args.host, args.port)
     try:
-        create_app(supervisor).run(host=args.host, port=args.port, threaded=True)
+        create_app(supervisor).run(
+            host=args.host, port=args.port, threaded=True, debug=args.debug
+        )
     finally:
         supervisor.stop()
     return 0
@@ -153,6 +159,11 @@ def main(argv: list[str] | None = None) -> int:
     serve = sub.add_parser("serve", help="run the web portal plus the watcher")
     serve.add_argument("--host", default="127.0.0.1", help="bind address")
     serve.add_argument("--port", type=int, default=8080)
+    serve.add_argument(
+        "--debug",
+        action="store_true",
+        help="Flask debug mode with template/code auto-reload; development only",
+    )
     serve.set_defaults(func=_cmd_serve)
 
     sub.add_parser("check", help="validate config and every external dependency").set_defaults(
