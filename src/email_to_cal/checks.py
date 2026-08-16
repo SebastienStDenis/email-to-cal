@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import anthropic
+import httpx
 
 from .config import Settings
 from .gcal import CalendarClient
@@ -55,12 +56,17 @@ def run_checks(settings: Settings) -> list[CheckResult]:
         except Exception as exc:
             results.append(CheckResult("imap", False, str(exc)))
 
-        try:
-            client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-            client.models.retrieve(settings.anthropic_model)
-            results.append(CheckResult("anthropic", True, f"{settings.anthropic_model} reachable"))
-        except Exception as exc:
-            results.append(CheckResult("anthropic", False, str(exc)))
+        if settings.llm_backend == "ollama":
+            results.append(_check_ollama(settings))
+        else:
+            try:
+                client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+                client.models.retrieve(settings.anthropic_model)
+                results.append(
+                    CheckResult("anthropic", True, f"{settings.anthropic_model} reachable")
+                )
+            except Exception as exc:
+                results.append(CheckResult("anthropic", False, str(exc)))
 
         if settings.pushover_user and settings.pushover_token:
             try:
@@ -79,3 +85,22 @@ def run_checks(settings: Settings) -> list[CheckResult]:
             results.append(CheckResult("google", False, str(exc)))
 
     return results
+
+
+def _check_ollama(settings: Settings) -> CheckResult:
+    """The server answers and the configured model is actually pulled."""
+    try:
+        with httpx.Client(base_url=settings.ollama_url, timeout=10.0) as client:
+            reply = client.get("/api/tags")
+            reply.raise_for_status()
+            names = {str(m.get("name", "")) for m in reply.json().get("models", [])}
+    except Exception as exc:
+        return CheckResult("ollama", False, f"cannot reach {settings.ollama_url}: {exc}")
+
+    wanted = settings.ollama_model
+    # Ollama lists a bare pull as "name:latest"; accept either spelling.
+    if wanted in names or (":" not in wanted and f"{wanted}:latest" in names):
+        return CheckResult("ollama", True, f"{wanted} available at {settings.ollama_url}")
+    return CheckResult(
+        "ollama", False, f"model {wanted!r} is not pulled; run: ollama pull {wanted}"
+    )

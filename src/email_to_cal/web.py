@@ -43,9 +43,15 @@ FORM_FIELDS = [
     "first_run_lookback_days",
     "sweep_folders",
     "sweep_interval_minutes",
+    "llm_backend",
     "anthropic_api_key",
     "anthropic_model",
     "anthropic_effort",
+    "ollama_url",
+    "ollama_model",
+    "ollama_num_ctx",
+    "ollama_timeout_seconds",
+    "ollama_keep_alive",
     "enable_vision",
     "max_attachment_mb",
     "min_confidence",
@@ -73,7 +79,7 @@ def missing_for_start(settings: Settings) -> list[str]:
     missing = []
     if not settings.imap_username or not settings.imap_password:
         missing.append("iCloud credentials")
-    if not settings.anthropic_api_key:
+    if settings.llm_backend == "anthropic" and not settings.anthropic_api_key:
         missing.append("Anthropic API key")
     if not settings.dry_run and not settings.google_token_file.exists():
         missing.append("Google authorisation")

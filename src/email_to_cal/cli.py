@@ -19,7 +19,7 @@ from .app import Pipeline, run
 from .checks import run_checks
 from .config import Settings
 from .gcal import CalendarClient
-from .llm import Extractor
+from .llm import make_extractor
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -99,7 +99,7 @@ def _cmd_replay(settings: Settings, args: argparse.Namespace) -> int:
 
     with Store(settings.state_db) as store:
         calendar = None if settings.dry_run else CalendarClient(settings, store)
-        pipeline = Pipeline(settings, store, Extractor(settings), calendar)
+        pipeline = Pipeline(settings, store, make_extractor(settings), calendar)
         # Replay is a debugging tool: always re-run, even for mail already handled.
         outcome = pipeline.process(raw, skip_seen=False)
 
@@ -116,6 +116,19 @@ def _cmd_replay(settings: Settings, args: argparse.Namespace) -> int:
         )
     )
     return 0
+
+
+def _cmd_eval_local(settings: Settings, args: argparse.Namespace) -> int:
+    """Diff the local Ollama extractor against cached Claude verdicts on real mail."""
+    from .eval_local import run_eval
+
+    return run_eval(
+        settings,
+        days=args.days,
+        limit=args.limit,
+        folders=args.folder,
+        eml_paths=args.eml,
+    )
 
 
 def _cmd_healthcheck(settings: Settings, args: argparse.Namespace) -> int:
@@ -172,6 +185,24 @@ def main(argv: list[str] | None = None) -> int:
     replay.add_argument("path")
     replay.add_argument("--dry-run", action="store_true", help="never write to Google Calendar")
     replay.set_defaults(func=_cmd_replay)
+
+    eval_local = sub.add_parser(
+        "eval-local",
+        help="compare the local Ollama model against cached Claude verdicts on your mail",
+    )
+    eval_local.add_argument("eml", nargs="*", help=".eml files to evaluate instead of IMAP")
+    eval_local.add_argument(
+        "--days", type=int, default=90, help="how far back to fetch mail over IMAP"
+    )
+    eval_local.add_argument(
+        "--limit", type=int, default=0, help="stop after comparing this many emails (0 = all)"
+    )
+    eval_local.add_argument(
+        "--folder",
+        action="append",
+        help="IMAP folder to read (repeatable); defaults to the watched folder",
+    )
+    eval_local.set_defaults(func=_cmd_eval_local)
 
     health = sub.add_parser("healthcheck", help="check the portal, falling back to the heartbeat")
     health.add_argument("--port", type=int, default=8080, help="portal port to probe")

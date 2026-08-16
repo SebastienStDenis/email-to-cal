@@ -6,7 +6,7 @@ import base64
 import hashlib
 import json
 import logging
-from typing import Any
+from typing import Any, Protocol
 
 import anthropic
 
@@ -73,7 +73,15 @@ times, is real and committed. Lower it when times are implied rather than stated
 """
 
 
-def _render_email(doc: EmailDocument, settings: Settings) -> str:
+class SupportsExtract(Protocol):
+    """What the pipeline needs from an extractor, whichever engine backs it."""
+
+    def extract(self, doc: EmailDocument) -> ExtractionResult: ...
+
+
+def _render_email(
+    doc: EmailDocument, settings: Settings, pdf_texts: list[tuple[str, str]] | None = None
+) -> str:
     """Lay the email out for the model, structured tiers first."""
     lines = [
         "<email>",
@@ -84,6 +92,14 @@ def _render_email(doc: EmailDocument, settings: Settings) -> str:
         f"Recipient's default timezone: {settings.default_timezone}",
         "",
     ]
+
+    for filename, text in pdf_texts or []:
+        lines += [
+            f"<attachment_text file='{filename}' note='text layer of an attached PDF'>",
+            text,
+            "</attachment_text>",
+            "",
+        ]
 
     if doc.json_ld:
         lines += [
@@ -158,24 +174,42 @@ def cache_key(doc: EmailDocument, settings: Settings) -> str:
     Attachments hash by content, not filename: two different tickets both called
     ticket.pdf must not share a verdict. The prompt is hashed too, so editing the gate
     invalidates every stale answer instead of silently preserving it.
+
+    Each backend keys its own namespace. The Anthropic material must stay byte-stable
+    across releases: eval-local finds historical Claude verdicts by recomputing these
+    keys, so a gratuitous change orphans every cached answer.
     """
-    material = json.dumps(
-        {
-            "message_id": doc.message_id,
-            "body": doc.body_text,
-            "json_ld": doc.json_ld,
-            "ics": doc.ics_events,
-            "attachments": sorted(hashlib.sha256(a.data).hexdigest() for a in doc.attachments),
-            "prompt": hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest(),
-            "model": settings.anthropic_model,
-            "effort": settings.anthropic_effort,
-            "categories": [r.model_dump() for r in settings.categories],
-            "vision": settings.enable_vision,
-        },
-        sort_keys=True,
-        default=str,
-    )
+    if settings.llm_backend == "ollama":
+        from .local_llm import local_cache_material
+
+        material = local_cache_material(doc, settings)
+    else:
+        material = json.dumps(
+            {
+                "message_id": doc.message_id,
+                "body": doc.body_text,
+                "json_ld": doc.json_ld,
+                "ics": doc.ics_events,
+                "attachments": sorted(hashlib.sha256(a.data).hexdigest() for a in doc.attachments),
+                "prompt": hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest(),
+                "model": settings.anthropic_model,
+                "effort": settings.anthropic_effort,
+                "categories": [r.model_dump() for r in settings.categories],
+                "vision": settings.enable_vision,
+            },
+            sort_keys=True,
+            default=str,
+        )
     return hashlib.sha256(material.encode()).hexdigest()
+
+
+def make_extractor(settings: Settings) -> SupportsExtract:
+    """The extractor the configuration asks for."""
+    if settings.llm_backend == "ollama":
+        from .local_llm import OllamaExtractor
+
+        return OllamaExtractor(settings)
+    return Extractor(settings)
 
 
 class Extractor:
