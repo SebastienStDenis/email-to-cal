@@ -10,6 +10,10 @@ services:
     volumes:
       # Holds config.json, token.json, and state.sqlite. Back this up.
       - data:/app/data
+    # Only needed for the local Ollama engine: lets the container reach an Ollama
+    # server on the host as http://host.docker.internal:11434.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
 volumes:
   data:

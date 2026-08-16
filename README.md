@@ -11,13 +11,17 @@ calendar entry. "Concerts near you this weekend" does not.
 ## How it works
 
 ```
-iCloud IMAP (IDLE)  →  MIME extraction  →  Claude  →  timezone resolution  →  Google Calendar
-                       JSON-LD              is this a       IATA → IANA          idempotent insert
-                       .ics                 commitment?     city → IANA          per-category routing
-                       text/plain           extract         default
+iCloud IMAP (IDLE)  →  MIME extraction  →  AI engine  →  timezone resolution  →  Google Calendar
+                       JSON-LD              is this a        IATA → IANA           idempotent insert
+                       .ics                 commitment?      city → IANA           per-category routing
+                       text/plain           extract          default
                        HTML → text          categorise
                        PDF / images
 ```
+
+The AI engine is either the Claude API (best quality, pay per email) or a local model
+served by [Ollama](https://ollama.com) on the same machine (free, slower, text-only) -
+see [Going local](#going-local-free-extraction-with-ollama).
 
 Extraction is tiered so the reliable sources win. Airlines and ticketing platforms embed
 [schema.org](https://schema.org/) JSON-LD in their HTML because Gmail and Outlook read it,
@@ -74,6 +78,9 @@ only by their author.
 
 From [console.anthropic.com](https://console.anthropic.com). Extraction uses one model
 call per email, cached by content, so a personal mailbox costs very little.
+
+Only needed for the Claude engine. With the local Ollama engine there is no third
+credential at all - see [Going local](#going-local-free-extraction-with-ollama).
 
 ## Run it
 
@@ -188,6 +195,7 @@ debugging:
 | `run` | Watch the mailbox and create events, headless. |
 | `check` | Validate config and every external dependency, then exit. |
 | `replay FILE.eml` | Push one saved email through the real pipeline. Add `--dry-run`. |
+| `eval-local` | Compare the local Ollama engine against cached Claude verdicts on your own mail. |
 | `healthcheck` | Used by the container `HEALTHCHECK`. |
 
 `replay` is the tool for tuning. Save a message that was handled wrongly, run it, and
@@ -207,7 +215,53 @@ Two settings control how eager the service is:
   emails at higher cost.
 
 Model responses are cached in the state database keyed by content, so replays and
-restarts never re-bill you for the same email.
+restarts never re-bill you for the same email. Each engine caches under its own keys,
+so switching engines re-reads mail rather than trusting the other engine's verdicts.
+
+## Going local: free extraction with Ollama
+
+The Claude engine reads every email that arrives, ads included, at API prices. The
+local engine moves the whole job onto your own machine: a small open-weight model
+served by [Ollama](https://ollama.com) does the gate and the extraction, and no mail
+ever leaves the box. The trade-offs, honestly stated:
+
+- **Free and private**, after a one-time ~13 GB model download.
+- **Slower** - a few minutes per email on CPU. The pipeline idles on IMAP anyway, so
+  this only matters during a large backfill.
+- **Text only.** Instead of viewing PDFs, the local engine reads their embedded text
+  layer, which covers most e-tickets and itineraries. Image-only attachments and
+  scanned PDFs are not read; the rare booking that lives *only* in pixels is missed.
+  Body text, JSON-LD, and .ics - the tiers that carry almost all real bookings -
+  work identically on both engines.
+
+The default model, `gpt-oss:20b`, wants roughly 16 GB of free RAM. Setup:
+
+```sh
+curl -fsSL https://ollama.com/install.sh | sh   # or your preferred install
+ollama pull gpt-oss:20b
+```
+
+Then pick **Local model via Ollama** as the engine in the portal's settings (or set
+`llm_backend` to `ollama` in `data/config.json`) and run the checks on the Status
+page - they verify the server is reachable and the model is pulled.
+
+**Measure before you switch.** If the service has been running on Claude, every past
+verdict is cached. `eval-local` replays your real mail through the local model and
+diffs the two engines, without a single API call:
+
+```sh
+uv run email-to-cal eval-local --days 90
+```
+
+It reports gate agreement, extraction differences, and - most importantly - **missed
+commitments**: emails Claude considered real bookings that the local model rejected,
+which is the failure you would otherwise never see. The exit code is non-zero when any
+exist. Local verdicts computed during the eval are cached, so the switch itself starts
+warm. Expect a long first run: every compared email is a full local inference.
+
+In Docker, install Ollama on the host, keep the `extra_hosts` block from the compose
+example, and set the Ollama server to `http://host.docker.internal:11434` under the
+engine's Advanced settings.
 
 ## Phone notifications
 

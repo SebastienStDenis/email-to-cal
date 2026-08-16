@@ -11,7 +11,8 @@ import anthropic
 
 from .config import Settings
 from .gcal import CalendarClient, CredentialsExpired, build_event_body
-from .llm import Extractor, cache_key
+from .llm import SupportsExtract, cache_key, make_extractor
+from .local_llm import OllamaUnavailable
 from .mailbox import AuthenticationFatal, Mailbox, sleep_with_backoff
 from .mime import parse_email
 from .notify import Notifier
@@ -40,7 +41,7 @@ class Pipeline:
         self,
         settings: Settings,
         store: Store,
-        extractor: Extractor,
+        extractor: SupportsExtract,
         calendar: CalendarClient | None,
     ) -> None:
         self._settings = settings
@@ -160,7 +161,7 @@ def run(settings: Settings, stopping: threading.Event) -> None:
         if calendar is not None:
             _bootstrap_calendars(settings, calendar)
 
-        pipeline = Pipeline(settings, store, Extractor(settings), calendar)
+        pipeline = Pipeline(settings, store, make_extractor(settings), calendar)
         mailbox = Mailbox(settings, store)
         attempt = 0
         store.beat()
@@ -218,6 +219,13 @@ def _process_one(pipeline: Pipeline, mailbox: Mailbox, store: Store, uid: int, r
     except CredentialsExpired:
         log.critical("Google credentials are no longer usable", exc_info=True)
         raise AuthenticationFatal("Google credentials are no longer usable") from None
+    except OllamaUnavailable:
+        # A down Ollama is an outage, not a poison message: leave the message unacked
+        # so the cursor holds without burning a failure attempt, and let the outer loop
+        # back off and retry. Acking with an error would write real mail off after
+        # MAX_ATTEMPTS while the server was merely restarting.
+        log.warning("Ollama unavailable; holding UID %d and backing off", uid, exc_info=True)
+        raise
     except Exception as exc:
         log.error("failed to process UID %d", uid, exc_info=True)
         pipeline.notifier.failure(f"UID {uid}: {type(exc).__name__}: {exc}")

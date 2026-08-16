@@ -2,7 +2,7 @@
 {% block content %}
 
 {% set mail_done = values.imap_username and values.imap_password %}
-{% set ai_done = values.anthropic_api_key %}
+{% set ai_done = values.anthropic_api_key or values.llm_backend == 'ollama' %}
 
 <h1>Settings</h1>
 <p class="page-sub">Connect your accounts and choose how events are sorted.</p>
@@ -23,8 +23,8 @@
     </div>
     <div class="step {{ 'done' if ai_done }}">
       <span class="tick">{{ '✓' if ai_done else '2' }}</span>
-      <span>Claude</span>
-      <span class="what">the AI that reads your email</span>
+      <span>AI engine</span>
+      <span class="what">Claude, or a local model on this machine</span>
     </div>
     <div class="step {{ 'done' if google_connected }}">
       <span class="tick">{{ '✓' if google_connected else '3' }}</span>
@@ -115,20 +115,23 @@
 
   <section class="card">
     <div class="card-head">
-      <h2>Claude
+      <h2>AI engine
         {% if ai_done %}<span class="badge ok">ready</span>{% endif %}
       </h2>
       <p class="card-sub">The AI that decides what's a real booking and what's just an ad.</p>
     </div>
     <div class="grid">
       <div>
-        <label for="anthropic_api_key">API key</label>
-        <input type="password" id="anthropic_api_key" name="anthropic_api_key"
-               value="{{ values.anthropic_api_key }}" placeholder="sk-ant-...">
-        <p class="hint">From
-          <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a>
-          &rarr; API keys. Each email is read once, so a personal mailbox costs very
-          little.</p>
+        <label for="llm_backend">Engine</label>
+        <select id="llm_backend" name="llm_backend">
+          <option value="anthropic" {% if values.llm_backend == 'anthropic' %}selected{% endif %}>
+            Claude API (best quality, pay per email)</option>
+          <option value="ollama" {% if values.llm_backend == 'ollama' %}selected{% endif %}>
+            Local model via Ollama (free, slower, text only)</option>
+        </select>
+        <p class="hint">The local engine runs entirely on this machine and reads the
+          text layer of PDFs instead of viewing them. Compare the two on your own mail
+          with <code>email-to-cal eval-local</code> before switching.</p>
       </div>
       <div>
         <label for="min_confidence">How sure it must be</label>
@@ -137,16 +140,32 @@
         <p class="hint">0 to 1. Less certain events are skipped. Raise it if junk shows
           up; lower it if real bookings are missed.</p>
       </div>
+      <div data-backend="anthropic">
+        <label for="anthropic_api_key">API key</label>
+        <input type="password" id="anthropic_api_key" name="anthropic_api_key"
+               value="{{ values.anthropic_api_key }}" placeholder="sk-ant-...">
+        <p class="hint">From
+          <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a>
+          &rarr; API keys. Each email is read once, so a personal mailbox costs very
+          little.</p>
+      </div>
+      <div data-backend="ollama">
+        <label for="ollama_model">Local model</label>
+        <input type="text" id="ollama_model" name="ollama_model"
+               value="{{ values.ollama_model }}">
+        <p class="hint">Pull it first: <code>ollama pull {{ values.ollama_model }}</code>.
+          The default needs roughly 16&nbsp;GB of free RAM.</p>
+      </div>
     </div>
     <details>
       <summary>Advanced</summary>
       <div class="grid">
-        <div>
+        <div data-backend="anthropic">
           <label for="anthropic_model">Model</label>
           <input type="text" id="anthropic_model" name="anthropic_model"
                  value="{{ values.anthropic_model }}">
         </div>
-        <div>
+        <div data-backend="anthropic">
           <label for="anthropic_effort">How carefully it reads</label>
           <select id="anthropic_effort" name="anthropic_effort">
             {% for effort in ['low', 'medium', 'high', 'xhigh', 'max'] %}
@@ -155,6 +174,29 @@
               {{ effort }}</option>
             {% endfor %}
           </select>
+        </div>
+        <div data-backend="ollama">
+          <label for="ollama_url">Ollama server</label>
+          <input type="text" id="ollama_url" name="ollama_url" value="{{ values.ollama_url }}">
+          <p class="hint">Running in Docker with Ollama on the host? Use
+            <code>http://host.docker.internal:11434</code>.</p>
+        </div>
+        <div data-backend="ollama">
+          <label for="ollama_num_ctx">Context window (tokens)</label>
+          <input type="number" id="ollama_num_ctx" name="ollama_num_ctx"
+                 value="{{ values.ollama_num_ctx }}">
+        </div>
+        <div data-backend="ollama">
+          <label for="ollama_timeout_seconds">Timeout (seconds)</label>
+          <input type="text" id="ollama_timeout_seconds" name="ollama_timeout_seconds"
+                 value="{{ values.ollama_timeout_seconds }}">
+          <p class="hint">CPU inference on a long itinerary can take minutes; that is
+            normal.</p>
+        </div>
+        <div data-backend="ollama">
+          <label for="ollama_keep_alive">Keep model loaded for</label>
+          <input type="text" id="ollama_keep_alive" name="ollama_keep_alive"
+                 value="{{ values.ollama_keep_alive }}">
         </div>
         <div>
           <label for="max_attachment_mb">Largest attachment to read (MB)</label>
@@ -168,11 +210,12 @@
           <p class="hint">A similar event starting this close on the same calendar is
             not created again. 0 turns the check off.</p>
         </div>
-        <div class="switch" style="align-self: end;">
+        <div class="switch" style="align-self: end;" data-backend="anthropic">
           <input type="checkbox" id="enable_vision" name="enable_vision"
                  {% if values.enable_vision %}checked{% endif %}>
           <label for="enable_vision">Read PDFs and images
-            <span class="hint">How boarding passes and e-tickets get read.</span></label>
+            <span class="hint">How boarding passes and e-tickets get read. The local
+              engine reads PDF text instead.</span></label>
         </div>
       </div>
     </details>
@@ -377,6 +420,17 @@
   </div>
 </template>
 <script>
+  // Show only the fields for the selected engine. Hidden inputs still submit, so
+  // switching back and forth never loses a saved key or model name.
+  const backendSelect = document.getElementById('llm_backend');
+  function showBackendFields() {
+    document.querySelectorAll('[data-backend]').forEach(el => {
+      el.style.display = el.dataset.backend === backendSelect.value ? '' : 'none';
+    });
+  }
+  backendSelect.addEventListener('change', showBackendFields);
+  showBackendFields();
+
   document.getElementById('add-category').addEventListener('click', () => {
     const template = document.getElementById('category-template');
     document.getElementById('categories').append(template.content.cloneNode(true));
