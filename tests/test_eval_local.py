@@ -1,112 +1,104 @@
-"""The eval command: verdict comparison and the replay over cached baselines."""
+"""The eval command: filter verdicts checked against cached Claude baselines."""
 
 from __future__ import annotations
 
 import pytest
 
 from email_to_cal.config import Settings
-from email_to_cal.eval_local import compare_results, run_eval
+from email_to_cal.eval_local import run_eval
 from email_to_cal.llm import cache_key
+from email_to_cal.local_llm import FilterVerdict
 from email_to_cal.mime import parse_email
-from email_to_cal.schema import EmailDocument, ExtractedEvent, ExtractionResult
+from email_to_cal.schema import EmailDocument, ExtractionResult
 from email_to_cal.store import Store
 
 from .conftest import FIXTURES
 
 
-def event(start: str) -> ExtractedEvent:
-    return ExtractedEvent(
-        kind="other",
-        title="t",
-        all_day=False,
-        start_local=start,
-        confidence=0.9,
-        reasoning="r",
-    )
+def claude_verdict(committed: bool) -> ExtractionResult:
+    return ExtractionResult(is_committed=committed, gate_reasoning="r", events=[])
 
 
-def result(committed: bool, starts: list[str] | None = None) -> ExtractionResult:
-    return ExtractionResult(
-        is_committed=committed,
-        gate_reasoning="r",
-        events=[event(s) for s in starts or []],
-    )
+class StubFilter:
+    """Stands in for Ollama with a fixed verdict."""
 
-
-def test_agreement_produces_no_diffs() -> None:
-    comparison = compare_results(
-        "s", result(True, ["2026-09-14T18:35:00"]), result(True, ["2026-09-14T18:35:00"])
-    )
-    assert comparison.gate_agrees
-    assert not comparison.missed_commitment
-    assert comparison.event_diffs == []
-
-
-def test_a_locally_rejected_booking_is_flagged_as_missed() -> None:
-    comparison = compare_results("s", result(True, ["2026-09-14T18:35:00"]), result(False))
-    assert not comparison.gate_agrees
-    assert comparison.missed_commitment
-
-
-def test_diverging_start_times_are_spelled_out() -> None:
-    comparison = compare_results(
-        "s",
-        result(True, ["2026-09-14T18:35:00", "2026-09-20T11:00:00"]),
-        result(True, ["2026-09-14T19:35:00"]),
-    )
-    assert comparison.gate_agrees
-    assert "1 events vs Claude's 2" in comparison.event_diffs
-    assert any("missing Claude's start 2026-09-14T18:35:00" in d for d in comparison.event_diffs)
-    assert any("extra start 2026-09-14T19:35:00" in d for d in comparison.event_diffs)
-
-
-class StubExtractor:
-    """Stands in for Ollama: always deems the email committed with no events."""
+    passes = True
 
     def __init__(self, settings: Settings) -> None:
         pass
 
-    def extract(self, doc: EmailDocument) -> ExtractionResult:
-        return result(True)
+    def judge(self, doc: EmailDocument) -> FilterVerdict:
+        return FilterVerdict(could_contain_commitment=self.passes, reasoning="stubbed")
 
 
-def test_run_eval_compares_against_the_cached_claude_verdict(
-    settings: Settings, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr("email_to_cal.eval_local.OllamaExtractor", StubExtractor)
-    eml = FIXTURES / "restaurant_plain.eml"
-
-    doc = parse_email(eml.read_bytes(), max_attachment_bytes=settings.max_attachment_bytes)
-    baseline_settings = settings.model_copy(update={"llm_backend": "anthropic"})
+def seed_baseline(settings: Settings, eml_name: str, committed: bool) -> str:
+    path = FIXTURES / eml_name
+    doc = parse_email(path.read_bytes(), max_attachment_bytes=settings.max_attachment_bytes)
     with Store(settings.state_db) as store:
         store.put_cached(
-            cache_key(doc, baseline_settings),
-            result(True, ["2026-08-22T19:30:00"]).model_dump(mode="json"),
+            cache_key(doc, settings), claude_verdict(committed).model_dump(mode="json")
         )
+    return str(path)
 
+
+def run(settings: Settings, paths: list[str]) -> tuple[int, str]:
     lines: list[str] = []
-    code = run_eval(
-        settings, days=90, limit=0, folders=None, eml_paths=[str(eml)], out=lines.append
-    )
-
-    assert code == 0
-    output = "\n".join(lines)
-    assert "Compared 1 emails" in output
-    assert "Gate agreement: 1/1" in output
-    # The stub found no events, so the diff section must call the divergence out.
-    assert "0 events vs Claude's 1" in output
+    code = run_eval(settings, days=90, limit=0, folders=None, eml_paths=paths, out=lines.append)
+    return code, "\n".join(lines)
 
 
-def test_run_eval_counts_emails_without_a_baseline(
+def test_a_correct_discard_counts_as_savings(
     settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("email_to_cal.eval_local.OllamaExtractor", StubExtractor)
-    eml = FIXTURES / "restaurant_plain.eml"
+    monkeypatch.setattr("email_to_cal.eval_local.OllamaFilter", StubFilter)
+    monkeypatch.setattr(StubFilter, "passes", False)
+    path = seed_baseline(settings, "restaurant_plain.eml", committed=False)
 
-    lines: list[str] = []
-    code = run_eval(
-        settings, days=90, limit=0, folders=None, eml_paths=[str(eml)], out=lines.append
-    )
+    code, output = run(settings, [path])
 
     assert code == 0
-    assert "Nothing compared" in "\n".join(lines)
+    assert "Would discard 1/1" in output
+    assert "No wrong discards" in output
+
+
+def test_a_wrong_discard_is_fatal_to_the_report(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("email_to_cal.eval_local.OllamaFilter", StubFilter)
+    monkeypatch.setattr(StubFilter, "passes", False)
+    path = seed_baseline(settings, "restaurant_plain.eml", committed=True)
+
+    code, output = run(settings, [path])
+
+    assert code == 1
+    assert "WRONG DISCARDS (1)" in output
+    assert "Kadeau" in output
+
+
+def test_structured_emails_bypass_the_filter_in_the_eval_too(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A .ics email counts as a pass without the stub filter ever being consulted."""
+
+    class ExplodingFilter(StubFilter):
+        def judge(self, doc: EmailDocument) -> FilterVerdict:
+            raise AssertionError("the filter must not see structured emails")
+
+    monkeypatch.setattr("email_to_cal.eval_local.OllamaFilter", ExplodingFilter)
+    path = seed_baseline(settings, "concert_ics.eml", committed=True)
+
+    code, output = run(settings, [path])
+
+    assert code == 0
+    assert "1 bypassed as structured" in output
+
+
+def test_emails_without_a_baseline_are_counted_and_skipped(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("email_to_cal.eval_local.OllamaFilter", StubFilter)
+
+    code, output = run(settings, [str(FIXTURES / "restaurant_plain.eml")])
+
+    assert code == 0
+    assert "Nothing compared" in output

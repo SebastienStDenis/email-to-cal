@@ -1,14 +1,17 @@
-"""Measure the local extractor against cached Claude verdicts before trusting it.
+"""Measure the local pre-filter against cached Claude verdicts before trusting it.
 
 Every email the service has processed left Claude's answer in the llm_cache, keyed by
 content. This replays real mail - fetched from IMAP or read from .eml files - through
-the Ollama backend and diffs the two, so switching engines is a decision made on the
-operator's own mailbox rather than on faith. No Anthropic calls are made: emails whose
-Claude verdict is not cached (or was cached under different settings) are counted and
-skipped.
+the filter and checks each discard against Claude's verdict, so switching the filter
+on is a decision made on the operator's own mailbox rather than on faith. No Anthropic
+calls are made: emails without a cached Claude verdict are counted and skipped.
 
-Local results are cached under the Ollama keyspace as they are computed, so an eval run
-doubles as a warm start: mail already evaluated is free when the backend flips.
+The only failure that matters is a wrong discard: the filter said drop, Claude had
+said real commitment. That email would silently never reach the calendar. A wrong
+pass merely costs one API call - the whole point of the recall-biased design.
+
+Filter verdicts are cached as they are computed, so an eval run doubles as a warm
+start for the switch.
 """
 
 from __future__ import annotations
@@ -23,7 +26,7 @@ from imap_tools import AND
 
 from .config import Settings
 from .llm import cache_key
-from .local_llm import OllamaExtractor
+from .local_llm import FilterVerdict, OllamaFilter, filter_cache_key
 from .mime import parse_email
 from .schema import ExtractionResult
 from .store import Store
@@ -33,21 +36,18 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class Comparison:
-    """One email, both verdicts."""
+    """One email: what the filter would do, against what Claude concluded."""
 
     subject: str
-    baseline_committed: bool
-    local_committed: bool
-    event_diffs: list[str] = field(default_factory=list)
+    filter_passes: bool
+    claude_committed: bool
+    filter_reasoning: str
+    bypassed: bool = False  # structured source; the filter never sees these
 
     @property
-    def gate_agrees(self) -> bool:
-        return self.baseline_committed == self.local_committed
-
-    @property
-    def missed_commitment(self) -> bool:
-        """The dangerous direction: Claude saw a booking, the local model rejected it."""
-        return self.baseline_committed and not self.local_committed
+    def wrong_discard(self) -> bool:
+        """The only dangerous outcome: filtered out, but Claude saw a commitment."""
+        return not self.filter_passes and self.claude_committed
 
 
 @dataclass
@@ -61,63 +61,43 @@ class Report:
         total = len(self.compared)
         if not total:
             lines.append("Nothing compared. Emails without a cached Claude verdict are")
-            lines.append("skipped; process some mail on the anthropic backend first, or")
-            lines.append("check that model/effort/categories still match the settings the")
-            lines.append(f"cache was written under. ({self.no_baseline} without baseline.)")
+            lines.append("skipped; process some mail first, or check that model/effort/")
+            lines.append("categories still match the settings the cache was written under.")
+            lines.append(f"({self.no_baseline} without baseline.)")
             return lines
 
-        agreeing = sum(1 for c in self.compared if c.gate_agrees)
-        missed = [c for c in self.compared if c.missed_commitment]
-        extra = [c for c in self.compared if not c.gate_agrees and c.local_committed]
-        with_diffs = [c for c in self.compared if c.gate_agrees and c.event_diffs]
+        discarded = [c for c in self.compared if not c.filter_passes]
+        wrong = [c for c in self.compared if c.wrong_discard]
+        bypassed = sum(1 for c in self.compared if c.bypassed)
+        passed_junk = sum(1 for c in self.compared if c.filter_passes and not c.claude_committed)
 
-        lines.append(f"Compared {total} emails; skipped {self.no_baseline} without a cached")
-        lines.append(f"Claude verdict; {len(self.failures)} failed to process locally.")
+        lines.append(f"Compared {total} emails; skipped {self.no_baseline} without a cached Claude")
+        lines.append(f"verdict; {len(self.failures)} filter failures (those fail open).")
         lines.append("")
-        lines.append(f"Gate agreement: {agreeing}/{total} ({100 * agreeing / total:.0f}%)")
-        if missed:
+        lines.append(
+            f"Would discard {len(discarded)}/{total} "
+            f"({100 * len(discarded) / total:.0f}% fewer API calls)."
+        )
+        lines.append(
+            f"Passed to Claude: {total - len(discarded)} "
+            f"({bypassed} bypassed as structured, {passed_junk} junk Claude then rejects)."
+        )
+        if wrong:
             lines.append("")
-            lines.append(f"MISSED COMMITMENTS ({len(missed)}) - Claude said yes, local said no.")
-            lines.append("These would be silently absent from your calendar:")
-            lines += [f"  - {c.subject}" for c in missed]
-        if extra:
-            lines.append("")
-            lines.append(f"Extra accepts ({len(extra)}) - local said yes, Claude said no.")
-            lines.append("Junk risk; min_confidence may still catch these:")
-            lines += [f"  - {c.subject}" for c in extra]
-        if with_diffs:
-            lines.append("")
-            lines.append(f"Event differences on agreed commitments ({len(with_diffs)}):")
-            for c in with_diffs:
+            lines.append(f"WRONG DISCARDS ({len(wrong)}) - Claude saw a real commitment, the")
+            lines.append("filter would have dropped it before Claude ever looked:")
+            for c in wrong:
                 lines.append(f"  - {c.subject}")
-                lines += [f"      {diff}" for diff in c.event_diffs]
+                lines.append(f"      filter said: {c.filter_reasoning}")
+        else:
+            lines.append("")
+            lines.append("No wrong discards: every commitment Claude found would still")
+            lines.append("have reached it.")
         if self.failures:
             lines.append("")
-            lines.append("Local processing failures:")
+            lines.append("Filter failures (harmless in production - these go to Claude):")
             lines += [f"  - {subject}: {error}" for subject, error in self.failures]
         return lines
-
-
-def compare_results(
-    subject: str, baseline: ExtractionResult, local: ExtractionResult
-) -> Comparison:
-    """Diff two verdicts on the axes that decide what lands on the calendar."""
-    diffs: list[str] = []
-    if baseline.is_committed and local.is_committed:
-        if len(local.events) != len(baseline.events):
-            diffs.append(f"{len(local.events)} events vs Claude's {len(baseline.events)}")
-        base_starts = sorted(e.start_local for e in baseline.events)
-        local_starts = sorted(e.start_local for e in local.events)
-        for start in (s for s in base_starts if s not in local_starts):
-            diffs.append(f"missing Claude's start {start}")
-        for start in (s for s in local_starts if s not in base_starts):
-            diffs.append(f"extra start {start}")
-    return Comparison(
-        subject=subject,
-        baseline_committed=baseline.is_committed,
-        local_committed=local.is_committed,
-        event_diffs=diffs,
-    )
 
 
 def _fetch_imap(settings: Settings, days: int, folders: list[str]) -> Iterator[bytes]:
@@ -147,9 +127,7 @@ def run_eval(
     eml_paths: list[str],
     out: Callable[[str], None] = print,
 ) -> int:
-    baseline_settings = settings.model_copy(update={"llm_backend": "anthropic"})
-    local_settings = settings.model_copy(update={"llm_backend": "ollama"})
-    extractor = OllamaExtractor(local_settings)
+    prefilter = OllamaFilter(settings)
     report = Report()
 
     if eml_paths:
@@ -163,34 +141,54 @@ def run_eval(
                 break
             doc = parse_email(raw, max_attachment_bytes=settings.max_attachment_bytes)
 
-            cached = store.get_cached(cache_key(doc, baseline_settings))
+            cached = store.get_cached(cache_key(doc, settings))
             if cached is None:
                 report.no_baseline += 1
                 continue
-            baseline = ExtractionResult.model_validate(cached)
+            claude = ExtractionResult.model_validate(cached)
 
-            local_key = cache_key(doc, local_settings)
-            cached_local = store.get_cached(local_key)
+            if doc.has_structured_source:
+                # The production path never filters these; count them as passes so the
+                # savings figure reflects what the filter will really do.
+                comparison = Comparison(
+                    subject=doc.subject,
+                    filter_passes=True,
+                    claude_committed=claude.is_committed,
+                    filter_reasoning="bypassed: structured data present",
+                    bypassed=True,
+                )
+                report.compared.append(comparison)
+                out(f"pass  {doc.subject[:70]}  (structured; straight to Claude)")
+                continue
+
+            key = filter_cache_key(doc, settings)
+            cached_verdict = store.get_cached(key)
             try:
-                if cached_local is not None:
-                    local = ExtractionResult.model_validate(cached_local)
+                if cached_verdict is not None:
+                    verdict = FilterVerdict.model_validate(cached_verdict)
                 else:
-                    local = extractor.extract(doc)
-                    store.put_cached(local_key, local.model_dump(mode="json"))
+                    verdict = prefilter.judge(doc)
+                    store.put_cached(key, verdict.model_dump(mode="json"))
             except Exception as exc:
                 report.failures.append((doc.subject, f"{type(exc).__name__}: {exc}"))
                 out(f"FAIL  {doc.subject[:70]}: {exc}")
                 continue
 
-            comparison = compare_results(doc.subject, baseline, local)
-            report.compared.append(comparison)
-            marker = "ok " if comparison.gate_agrees and not comparison.event_diffs else "DIFF"
-            out(
-                f"{marker}  {doc.subject[:70]}  "
-                f"(claude={'yes' if baseline.is_committed else 'no'}, "
-                f"local={'yes' if local.is_committed else 'no'})"
+            comparison = Comparison(
+                subject=doc.subject,
+                filter_passes=verdict.could_contain_commitment,
+                claude_committed=claude.is_committed,
+                filter_reasoning=verdict.reasoning,
             )
+            report.compared.append(comparison)
+            if comparison.wrong_discard:
+                marker = "MISS"
+            elif comparison.filter_passes:
+                marker = "pass"
+            else:
+                marker = "drop"
+            out(f"{marker}  {doc.subject[:70]}  (claude={'yes' if claude.is_committed else 'no'})")
 
     for line in report.summary_lines():
         out(line)
-    return 1 if any(c.missed_commitment for c in report.compared) else 0
+    return 1 if any(c.wrong_discard for c in report.compared) else 0

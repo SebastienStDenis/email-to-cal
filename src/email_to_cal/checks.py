@@ -56,17 +56,15 @@ def run_checks(settings: Settings) -> list[CheckResult]:
         except Exception as exc:
             results.append(CheckResult("imap", False, str(exc)))
 
-        if settings.llm_backend == "ollama":
+        try:
+            client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+            client.models.retrieve(settings.anthropic_model)
+            results.append(CheckResult("anthropic", True, f"{settings.anthropic_model} reachable"))
+        except Exception as exc:
+            results.append(CheckResult("anthropic", False, str(exc)))
+
+        if settings.local_filter_enabled:
             results.append(_check_ollama(settings))
-        else:
-            try:
-                client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-                client.models.retrieve(settings.anthropic_model)
-                results.append(
-                    CheckResult("anthropic", True, f"{settings.anthropic_model} reachable")
-                )
-            except Exception as exc:
-                results.append(CheckResult("anthropic", False, str(exc)))
 
         if settings.pushover_user and settings.pushover_token:
             try:
@@ -88,7 +86,12 @@ def run_checks(settings: Settings) -> list[CheckResult]:
 
 
 def _check_ollama(settings: Settings) -> CheckResult:
-    """The server answers and the configured model is actually pulled."""
+    """The filter's server answers and the configured model is actually pulled.
+
+    A failure here never blocks mail - the filter fails open - but it does mean every
+    email is going to the paid API, which is exactly what the operator turned the
+    filter on to avoid.
+    """
     try:
         with httpx.Client(base_url=settings.ollama_url, timeout=10.0) as client:
             reply = client.get("/api/tags")

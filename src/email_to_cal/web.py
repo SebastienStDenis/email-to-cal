@@ -43,15 +43,12 @@ FORM_FIELDS = [
     "first_run_lookback_days",
     "sweep_folders",
     "sweep_interval_minutes",
-    "llm_backend",
     "anthropic_api_key",
     "anthropic_model",
     "anthropic_effort",
+    "local_filter_enabled",
     "ollama_url",
     "ollama_model",
-    "ollama_num_ctx",
-    "ollama_timeout_seconds",
-    "ollama_keep_alive",
     "enable_vision",
     "max_attachment_mb",
     "min_confidence",
@@ -79,7 +76,7 @@ def missing_for_start(settings: Settings) -> list[str]:
     missing = []
     if not settings.imap_username or not settings.imap_password:
         missing.append("iCloud credentials")
-    if settings.llm_backend == "anthropic" and not settings.anthropic_api_key:
+    if not settings.anthropic_api_key:
         missing.append("Anthropic API key")
     if not settings.dry_run and not settings.google_token_file.exists():
         missing.append("Google authorisation")
@@ -144,7 +141,13 @@ def parse_form(form: Any) -> dict[str, Any]:
     """The submitted form as Settings keyword arguments, still unvalidated."""
     values: dict[str, Any] = {}
     for name in FORM_FIELDS:
-        if name in ("enable_vision", "dry_run", "pushover_notify_events", "pushover_notify_errors"):
+        if name in (
+            "enable_vision",
+            "local_filter_enabled",
+            "dry_run",
+            "pushover_notify_events",
+            "pushover_notify_errors",
+        ):
             values[name] = name in form
         elif name == "sweep_folders":
             # One hidden input per chip, so folder names need no delimiter at all.

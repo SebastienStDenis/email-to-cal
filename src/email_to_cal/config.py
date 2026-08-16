@@ -72,22 +72,21 @@ class Settings(BaseSettings):
     sweep_folders: Annotated[list[str], NoDecode] = []
     sweep_interval_minutes: int = Field(default=15, ge=1)
 
-    # Which engine reads the mail: "anthropic" calls the Claude API, "ollama" runs a
-    # local model on an Ollama server and never leaves the machine.
-    llm_backend: Literal["anthropic", "ollama"] = "anthropic"
-
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-opus-5"
     anthropic_effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
 
+    # A free local model (via Ollama) discards obvious junk before it reaches the paid
+    # API. Purely a cost optimisation: Claude still makes every real decision, and an
+    # unreachable Ollama fails open - mail goes to Claude as if the filter were off.
+    local_filter_enabled: bool = False
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "gpt-oss:20b"
-    # Long emails plus the schema-bearing prompt overflow Ollama's small default context,
-    # which silently truncates the top of the prompt - the gate itself - first.
+    # Long emails would overflow Ollama's small default context, which silently
+    # truncates the top of the prompt - the filter instructions - first.
     ollama_num_ctx: int = Field(default=16384, ge=2048)
-    # CPU inference on a long itinerary legitimately takes minutes; a short read timeout
-    # would abandon work that was going to finish.
-    ollama_timeout_seconds: float = Field(default=900.0, gt=0)
+    # CPU inference is slow; a short read timeout would abandon work about to finish.
+    ollama_timeout_seconds: float = Field(default=600.0, gt=0)
     # Keep the model resident between emails so a burst of mail loads it once.
     ollama_keep_alive: str = "30m"
     enable_vision: bool = True

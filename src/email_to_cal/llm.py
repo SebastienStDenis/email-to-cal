@@ -6,7 +6,7 @@ import base64
 import hashlib
 import json
 import logging
-from typing import Any, Protocol
+from typing import Any
 
 import anthropic
 
@@ -71,12 +71,6 @@ description, not the title.
 Confidence reflects how certain you are that this specific event, with these specific \
 times, is real and committed. Lower it when times are implied rather than stated.
 """
-
-
-class SupportsExtract(Protocol):
-    """What the pipeline needs from an extractor, whichever engine backs it."""
-
-    def extract(self, doc: EmailDocument) -> ExtractionResult: ...
 
 
 def _render_email(
@@ -175,41 +169,27 @@ def cache_key(doc: EmailDocument, settings: Settings) -> str:
     ticket.pdf must not share a verdict. The prompt is hashed too, so editing the gate
     invalidates every stale answer instead of silently preserving it.
 
-    Each backend keys its own namespace. The Anthropic material must stay byte-stable
-    across releases: eval-local finds historical Claude verdicts by recomputing these
-    keys, so a gratuitous change orphans every cached answer.
+    This material must stay byte-stable across releases: eval-local finds historical
+    verdicts by recomputing these keys, so a gratuitous change orphans every cached
+    answer. The local prefilter caches under its own keys (see local_llm).
     """
-    if settings.llm_backend == "ollama":
-        from .local_llm import local_cache_material
-
-        material = local_cache_material(doc, settings)
-    else:
-        material = json.dumps(
-            {
-                "message_id": doc.message_id,
-                "body": doc.body_text,
-                "json_ld": doc.json_ld,
-                "ics": doc.ics_events,
-                "attachments": sorted(hashlib.sha256(a.data).hexdigest() for a in doc.attachments),
-                "prompt": hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest(),
-                "model": settings.anthropic_model,
-                "effort": settings.anthropic_effort,
-                "categories": [r.model_dump() for r in settings.categories],
-                "vision": settings.enable_vision,
-            },
-            sort_keys=True,
-            default=str,
-        )
+    material = json.dumps(
+        {
+            "message_id": doc.message_id,
+            "body": doc.body_text,
+            "json_ld": doc.json_ld,
+            "ics": doc.ics_events,
+            "attachments": sorted(hashlib.sha256(a.data).hexdigest() for a in doc.attachments),
+            "prompt": hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest(),
+            "model": settings.anthropic_model,
+            "effort": settings.anthropic_effort,
+            "categories": [r.model_dump() for r in settings.categories],
+            "vision": settings.enable_vision,
+        },
+        sort_keys=True,
+        default=str,
+    )
     return hashlib.sha256(material.encode()).hexdigest()
-
-
-def make_extractor(settings: Settings) -> SupportsExtract:
-    """The extractor the configuration asks for."""
-    if settings.llm_backend == "ollama":
-        from .local_llm import OllamaExtractor
-
-        return OllamaExtractor(settings)
-    return Extractor(settings)
 
 
 class Extractor:
