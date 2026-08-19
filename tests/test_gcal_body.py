@@ -4,7 +4,7 @@ import re
 
 from email_to_cal.config import Settings
 from email_to_cal.gcal import build_event_body, event_id_for
-from email_to_cal.schema import ExtractedEvent
+from email_to_cal.schema import EventLocation, ExtractedEvent
 
 GOOGLE_ID_CHARSET = re.compile(r"^[a-v0-9]{5,1024}$")
 
@@ -14,7 +14,6 @@ def flight() -> ExtractedEvent:
         kind="flight",
         title="NH106 HND to LAX",
         description="Confirmation K3TQ9P",
-        location="Tokyo Haneda",
         all_day=False,
         start_local="2026-09-14T18:35:00",
         end_local="2026-09-14T11:25:00",
@@ -53,6 +52,12 @@ def test_flight_gets_two_different_timezones(settings: Settings) -> None:
     assert body["end"]["dateTime"] < body["start"]["dateTime"]
 
 
+def test_flight_location_is_a_geocodable_airport_address(settings: Settings) -> None:
+    body = build_event_body(flight(), settings, message_id="<a@b>")
+    # "HND" and "Tokyo Haneda" resolve to nothing on a map; this resolves to the airport.
+    assert body["location"] == "Tokyo International Airport, Tokyo, JP"
+
+
 def test_all_day_uses_exclusive_end_date(settings: Settings) -> None:
     event = ExtractedEvent(
         kind="other",
@@ -87,7 +92,7 @@ def test_missing_end_gets_a_one_hour_default(settings: Settings) -> None:
     event = ExtractedEvent(
         kind="restaurant",
         title="Kadeau",
-        location="Copenhagen",
+        location=EventLocation(locality="Copenhagen"),
         all_day=False,
         start_local="2026-08-22T19:30:00",
         confidence=0.9,
@@ -123,7 +128,7 @@ def test_unresolvable_location_uses_the_configured_default(settings: Settings) -
     event = ExtractedEvent(
         kind="appointment",
         title="Dentist",
-        location="Praxis Dr. Müller",
+        location=EventLocation(name="Praxis Dr. Müller"),
         all_day=False,
         start_local="2026-08-22T09:00:00",
         confidence=0.9,

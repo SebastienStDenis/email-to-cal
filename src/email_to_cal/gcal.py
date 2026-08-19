@@ -19,6 +19,7 @@ from googleapiclient.errors import HttpError
 
 from .config import Settings
 from .mime import SYNTHETIC_ID_DOMAIN
+from .places import resolve_address
 from .schema import ExtractedEvent
 from .store import Store
 from .timezones import localise, parse_naive, resolve_zones
@@ -155,12 +156,13 @@ def build_event_body(
     message_id: str,
 ) -> dict[str, Any]:
     """Render one extracted event as a Google Calendar event resource."""
+    address = resolve_address(event)
     start_zone, end_zone = resolve_zones(
         start_tz=event.start_tz,
         end_tz=event.end_tz,
         departure_iata=event.departure_iata,
         arrival_iata=event.arrival_iata,
-        location=event.location,
+        location=address,
         default_timezone=settings.default_timezone,
     )
 
@@ -221,8 +223,8 @@ def build_event_body(
     if description_lines:
         body["description"] = "\n\n".join(description_lines)
 
-    if event.location:
-        body["location"] = event.location
+    if address:
+        body["location"] = address
 
     return body
 

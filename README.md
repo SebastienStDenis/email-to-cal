@@ -35,6 +35,13 @@ IATA airport lookup, which beats a city match, which beats your configured defau
 Tokyo → Los Angeles flight gets `Asia/Tokyo` on the departure and `America/Los_Angeles`
 on the arrival, and renders correctly in both.
 
+Locations are written as full addresses, because Google Calendar geocodes the location
+string and only shows a map, directions, and travel time when it resolves. The model
+collects the address in parts - venue, street, city, region, postal code, country - from
+wherever the email states them, and they are rendered into one line in the order a
+geocoder expects. Flights are filled in from the offline airport dataset instead, so a
+flight from `LGA` gets `Laguardia Airport, New York, US` rather than an airport code.
+
 Re-delivering the same email is a no-op: every event gets a deterministic id derived from
 the message and the event's identity, so a duplicate insert is recognised and ignored
 rather than double-booking you. The same booking arriving in a *different* email - a

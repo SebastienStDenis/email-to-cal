@@ -7,15 +7,12 @@ city match, which beats the operator's default.
 
 from __future__ import annotations
 
-import functools
 import logging
 import re
-from collections.abc import Mapping
 from datetime import date, datetime, timedelta
-from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-import airportsdata
+from .places import airport_record
 
 log = logging.getLogger(__name__)
 
@@ -58,16 +55,9 @@ CITY_ZONES: dict[str, str] = {
 }
 
 
-@functools.cache
-def _iata_index() -> Mapping[str, Mapping[str, Any]]:
-    return airportsdata.load("IATA")
-
-
 def timezone_for_iata(code: str | None) -> str | None:
     """Map an IATA airport code to its IANA zone using the offline dataset."""
-    if not code:
-        return None
-    entry = _iata_index().get(code.strip().upper())
+    entry = airport_record(code)
     if entry is None:
         return None
     zone = entry.get("tz")
