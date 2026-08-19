@@ -12,7 +12,7 @@ from typing import Any
 from urllib.parse import quote
 
 from google.auth.exceptions import RefreshError
-from google.auth.transport.requests import Request
+from google.auth.transport.requests import AuthorizedSession, Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -29,6 +29,12 @@ log = logging.getLogger(__name__)
 # Full calendar scope: creating a missing calendar needs calendars.insert, and routing
 # needs calendarList.list. See the README for the narrower calendar.app.created setup.
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
+
+# The JSON API refuses any event source url outside http(s), so the Apple Mail deep
+# link goes in over CalDAV, which stores the iCalendar URL property verbatim. Needs the
+# CalDAV API enabled on the same Cloud project as the Calendar API.
+CALDAV_BASE = "https://apidata.googleusercontent.com/caldav/v2"
+CALDAV_TIMEOUT = 30
 
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 # Google overloads 403 for both throttling and permanent permission failures.
@@ -140,13 +146,35 @@ def event_id_for(message_id: str, event: ExtractedEvent) -> str:
 def mail_link(message_id: str) -> str | None:
     """An Apple Mail deep link to the source message.
 
-    Google rejects any event source url that is not http(s), so this can only live in
-    the description, where Google leaves it as plain text and Apple Calendar clients
-    open Mail from it. Synthetic ids name no real message.
+    Synthetic ids name no real message.
     """
     if message_id.endswith(f"@{SYNTHETIC_ID_DOMAIN}>"):
         return None
     return "message://" + quote(message_id, safe="@")
+
+
+def fold_ical_line(line: str) -> str:
+    """Split a content line at the 75-octet limit RFC 5545 sets, continuing with a space."""
+    octets = line.encode()
+    if len(octets) <= 75:
+        return line
+    chunks = [octets[:75]]
+    rest = octets[75:]
+    while rest:
+        chunks.append(rest[:74])
+        rest = rest[74:]
+    return "\r\n ".join(chunk.decode() for chunk in chunks)
+
+
+def with_url_property(ics: str, url: str) -> str:
+    """The served calendar object with a URL property on its event."""
+    lines = ics.replace("\r\n", "\n").split("\n")
+    out = []
+    for line in lines:
+        if line.startswith("END:VEVENT"):
+            out.append(fold_ical_line(f"URL:{url}"))
+        out.append(line)
+    return "\r\n".join(out)
 
 
 def build_event_body(
@@ -217,9 +245,6 @@ def build_event_body(
         description_lines.append(event.description)
     if event.booking_reference:
         description_lines.append(f"Booking reference: {event.booking_reference}")
-    link = mail_link(message_id)
-    if link:
-        description_lines.append(f"Open in Apple Mail: {link}")
     if description_lines:
         body["description"] = "\n\n".join(description_lines)
 
@@ -230,12 +255,20 @@ def build_event_body(
 
 
 class CalendarClient:
-    def __init__(self, settings: Settings, store: Store, service: Any | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        store: Store,
+        service: Any | None = None,
+        caldav_session: Any | None = None,
+    ) -> None:
         self._settings = settings
         self._store = store
         self._service = service or build(
             "calendar", "v3", credentials=load_credentials(settings), cache_discovery=False
         )
+        self._caldav_session = caldav_session
+        self._primary_id: str | None = None
 
     def resolve_calendar(self, name: str, *, create_missing: bool = True) -> str:
         """Map a human calendar name to its id, creating the calendar once if needed."""
@@ -332,16 +365,61 @@ class CalendarClient:
             if not page_token:
                 return None
 
-    def insert(self, calendar_id: str, body: dict[str, Any]) -> str:
+    def insert(self, calendar_id: str, body: dict[str, Any], *, url: str | None = None) -> str:
         """Insert an event, treating an existing id as success."""
         try:
             created = self._retry(self._service.events().insert(calendarId=calendar_id, body=body))
-            return str(created["id"])
         except HttpError as exc:
             if exc.resp.status == 409:
                 log.info("event %s already exists on %s", body["id"], calendar_id)
                 return str(body["id"])
             raise
+        if url:
+            self.attach_url(calendar_id, str(created["iCalUID"]), url)
+        return str(created["id"])
+
+    def attach_url(self, calendar_id: str, ical_uid: str, url: str) -> None:
+        """Add a URL property to an event over CalDAV, where Apple Calendar reads it.
+
+        Rewrites the object Google serves rather than composing one, so everything the
+        JSON insert set - including the private properties dedup relies on - survives.
+        A link is not worth failing an already-created event over, so this only logs.
+        """
+        calendar = quote(self._caldav_calendar(calendar_id), safe="")
+        href = f"{CALDAV_BASE}/{calendar}/events/{ical_uid}.ics"
+        try:
+            session = self._session()
+            response = session.get(href, timeout=CALDAV_TIMEOUT)
+            response.raise_for_status()
+            written = session.put(
+                href,
+                data=with_url_property(response.text, url).encode(),
+                headers={"Content-Type": "text/calendar; charset=utf-8"},
+                timeout=CALDAV_TIMEOUT,
+            )
+            written.raise_for_status()
+        except Exception:
+            log.warning("could not attach the mail link to %s", ical_uid, exc_info=True)
+
+    def probe_caldav(self, calendar_id: str) -> None:
+        """Raise unless the CalDAV API answers for this calendar."""
+        calendar = quote(self._caldav_calendar(calendar_id), safe="")
+        response = self._session().get(f"{CALDAV_BASE}/{calendar}/events/", timeout=CALDAV_TIMEOUT)
+        response.raise_for_status()
+
+    def _session(self) -> Any:
+        if self._caldav_session is None:
+            self._caldav_session = AuthorizedSession(load_credentials(self._settings))
+        return self._caldav_session
+
+    def _caldav_calendar(self, calendar_id: str) -> str:
+        """CalDAV addresses calendars by their real id; "primary" is a JSON API alias."""
+        if calendar_id != "primary":
+            return calendar_id
+        if self._primary_id is None:
+            resolved = self._retry(self._service.calendars().get(calendarId="primary"))
+            self._primary_id = str(resolved["id"])
+        return self._primary_id
 
     def _retry(self, request: Any, attempts: int = 5) -> dict[str, Any]:
         """Truncated exponential backoff with jitter, per Google's guidance."""
