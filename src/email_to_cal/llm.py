@@ -68,6 +68,14 @@ Titles are short and scannable: "LX318 ZRH to LHR", "Radiohead at the O2", "Dinn
 Kadeau". Put booking references, seats, terminals, and confirmation numbers in \
 description, not the title.
 
+Locations: the calendar geocodes whatever you put in location, so a venue name on its own \
+usually resolves to nothing and the event gets no map, no directions, and no travel time. \
+Fill in every address part the email actually gives - the structured data block, a \
+"getting here" section, and the sender's footer are where they usually hide - and leave \
+the rest null. Never invent a street, postal code, or city you cannot see: a name with no \
+address is far better than a name with a wrong one. For flights leave location null \
+entirely, the departure airport's address is filled in downstream from the IATA code.
+
 Confidence reflects how certain you are that this specific event, with these specific \
 times, is real and committed. Lower it when times are implied rather than stated.
 """

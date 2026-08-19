@@ -10,7 +10,7 @@ from email_to_cal.app import Pipeline, _process_one
 from email_to_cal.config import CategoryRule, Settings
 from email_to_cal.local_llm import FilterVerdict, OllamaUnavailable
 from email_to_cal.mailbox import AuthenticationFatal
-from email_to_cal.schema import EmailDocument, ExtractedEvent, ExtractionResult
+from email_to_cal.schema import EmailDocument, EventLocation, ExtractedEvent, ExtractionResult
 from email_to_cal.store import Store
 
 from .conftest import fixture_bytes
@@ -62,7 +62,7 @@ def concert_event(confidence: float = 0.95, category: str | None = "music") -> E
     return ExtractedEvent(
         kind="concert",
         title="Radiohead at The O2",
-        location="The O2 Arena, London",
+        location=EventLocation(name="The O2 Arena", locality="London", country="GB"),
         all_day=False,
         start_local="2026-11-02T19:30:00",
         end_local="2026-11-02T22:30:00",

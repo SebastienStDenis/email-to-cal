@@ -54,6 +54,36 @@ class EmailDocument(BaseModel):
         return bool(self.json_ld or self.ics_events)
 
 
+class EventLocation(BaseModel):
+    """Where an event happens, in parts.
+
+    Calendars store the location as one string and geocode it, so a venue name alone
+    often resolves to nothing. Collecting the address in parts lets the model copy what
+    the email actually says without also having to decide how to write it out; places
+    renders it.
+    """
+
+    name: str | None = Field(
+        default=None, description="Venue or business name, e.g. 'The O2 Arena'."
+    )
+    street: str | None = Field(
+        default=None, description="Street address including any building number."
+    )
+    locality: str | None = Field(default=None, description="City or town.")
+    region: str | None = Field(
+        default=None, description="State, province, or county, where the country uses one."
+    )
+    postal_code: str | None = None
+    country: str | None = Field(
+        default=None, description="Country name, or its ISO 3166-1 alpha-2 code."
+    )
+
+    @property
+    def has_address(self) -> bool:
+        """Whether this says more than a name, and so has some chance of geocoding."""
+        return any((self.street, self.locality, self.region, self.postal_code, self.country))
+
+
 class ExtractedEvent(BaseModel):
     """One calendar-worthy commitment found in an email."""
 
@@ -62,8 +92,8 @@ class ExtractedEvent(BaseModel):
     description: str | None = Field(
         default=None, description="Useful detail: booking reference, seat, terminal, notes."
     )
-    location: str | None = Field(
-        default=None, description="Venue or address as written in the email."
+    location: EventLocation | None = Field(
+        default=None, description="Where the event happens, in as much detail as the email gives."
     )
     all_day: bool = Field(description="True only when the email gives no meaningful clock time.")
     start_local: str = Field(
