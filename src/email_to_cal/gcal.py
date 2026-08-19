@@ -401,6 +401,12 @@ class CalendarClient:
         except Exception:
             log.warning("could not attach the mail link to %s", ical_uid, exc_info=True)
 
+    def probe_caldav(self, calendar_id: str) -> None:
+        """Raise unless the CalDAV API answers for this calendar."""
+        calendar = quote(self._caldav_calendar(calendar_id), safe="")
+        response = self._session().get(f"{CALDAV_BASE}/{calendar}/events/", timeout=CALDAV_TIMEOUT)
+        response.raise_for_status()
+
     def _session(self) -> Any:
         if self._caldav_session is None:
             self._caldav_session = AuthorizedSession(load_credentials(self._settings))

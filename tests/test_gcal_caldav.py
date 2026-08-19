@@ -33,12 +33,13 @@ class FakeSession:
     def __init__(self, served: str = SERVED, put_status: int = 204) -> None:
         self._served = served
         self._put_status = put_status
+        self.fail_get = False
         self.gets: list[str] = []
         self.puts: list[tuple[str, bytes]] = []
 
     def get(self, href: str, **kwargs: Any) -> FakeResponse:
         self.gets.append(href)
-        return FakeResponse(self._served)
+        return FakeResponse(self._served, status=500 if self.fail_get else 200)
 
     def put(self, href: str, data: bytes = b"", **kwargs: Any) -> FakeResponse:
         self.puts.append((href, data))
@@ -142,3 +143,19 @@ def test_a_failed_attach_does_not_fail_the_event(settings: Settings) -> None:
     )
 
     assert calendar.insert("cal", {"id": "abc"}, url="message://x") == "abc"
+
+
+def test_probe_caldav_reports_an_unreachable_api(settings: Settings) -> None:
+    session = FakeSession()
+    calendar = CalendarClient(
+        settings, Store(settings.state_db), service=FakeService(), caldav_session=session
+    )
+
+    calendar.probe_caldav("cal@group.calendar.google.com")
+    assert session.gets == [
+        "https://apidata.googleusercontent.com/caldav/v2/cal%40group.calendar.google.com/events/"
+    ]
+
+    session.fail_get = True
+    with pytest.raises(RuntimeError):
+        calendar.probe_caldav("cal@group.calendar.google.com")
