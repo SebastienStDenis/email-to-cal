@@ -111,6 +111,7 @@ def test_source_message_is_recorded_for_later_reconciliation(settings: Settings)
 def test_description_links_to_the_source_email(settings: Settings) -> None:
     body = build_event_body(flight(), settings, message_id="<a@b>")
     assert "Open in Apple Mail: message://%3Ca@b%3E" in body["description"]
+    assert "<a@b>" not in body["description"]
 
 
 def test_synthetic_message_ids_get_no_mail_link(settings: Settings) -> None:
