@@ -41,6 +41,7 @@ class FakeMailbox:
 class StubCalendar:
     def __init__(self) -> None:
         self.inserted: list[tuple[str, dict[str, Any]]] = []
+        self.urls: list[str | None] = []
         self.existing: dict[str, Any] | None = None
         self.lookups: list[tuple[str, str | None]] = []
 
@@ -53,8 +54,9 @@ class StubCalendar:
         self.lookups.append((calendar_id, booking_reference))
         return self.existing
 
-    def insert(self, calendar_id: str, body: dict[str, Any]) -> str:
+    def insert(self, calendar_id: str, body: dict[str, Any], *, url: str | None = None) -> str:
         self.inserted.append((calendar_id, body))
+        self.urls.append(url)
         return str(body["id"])
 
 
