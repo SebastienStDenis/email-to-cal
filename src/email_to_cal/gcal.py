@@ -139,8 +139,9 @@ def event_id_for(message_id: str, event: ExtractedEvent) -> str:
 def mail_link(message_id: str) -> str | None:
     """An Apple Mail deep link to the source message.
 
-    Google Calendar only linkifies http(s), so this renders as plain text there, but
-    Apple Calendar clients open Mail from it. Synthetic ids name no real message.
+    Google rejects any event source url that is not http(s), so this can only live in
+    the description, where Google leaves it as plain text and Apple Calendar clients
+    open Mail from it. Synthetic ids name no real message.
     """
     if message_id.endswith(f"@{SYNTHETIC_ID_DOMAIN}>"):
         return None
@@ -214,11 +215,11 @@ def build_event_body(
         description_lines.append(event.description)
     if event.booking_reference:
         description_lines.append(f"Booking reference: {event.booking_reference}")
-    description_lines.append(f"Added by email-to-cal from {message_id}")
     link = mail_link(message_id)
     if link:
         description_lines.append(f"Open in Apple Mail: {link}")
-    body["description"] = "\n\n".join(description_lines)
+    if description_lines:
+        body["description"] = "\n\n".join(description_lines)
 
     if event.location:
         body["location"] = event.location
