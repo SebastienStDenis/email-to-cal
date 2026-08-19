@@ -11,17 +11,17 @@ calendar entry. "Concerts near you this weekend" does not.
 ## How it works
 
 ```
-iCloud IMAP (IDLE)  →  MIME extraction  →  AI engine  →  timezone resolution  →  Google Calendar
-                       JSON-LD              is this a        IATA → IANA           idempotent insert
-                       .ics                 commitment?      city → IANA           per-category routing
-                       text/plain           extract          default
-                       HTML → text          categorise
+iCloud IMAP (IDLE)  →  MIME extraction  →  local filter  →  Claude  →  timezone resolution  →  Google Calendar
+                       JSON-LD              (optional)        is this a     IATA → IANA           idempotent insert
+                       .ics                 discard obvious   commitment?   city → IANA           per-category routing
+                       text/plain           junk for free     extract       default
+                       HTML → text                            categorise
                        PDF / images
 ```
 
-The AI engine is either the Claude API (best quality, pay per email) or a local model
-served by [Ollama](https://ollama.com) on the same machine (free, slower, text-only) -
-see [Going local](#going-local-free-extraction-with-ollama).
+The local filter is an optional cost cut: a free model served by
+[Ollama](https://ollama.com) on the same machine discards obvious junk before it costs
+an API call - see [The local junk filter](#the-local-junk-filter-optional).
 
 Extraction is tiered so the reliable sources win. Airlines and ticketing platforms embed
 [schema.org](https://schema.org/) JSON-LD in their HTML because Gmail and Outlook read it,
@@ -77,10 +77,8 @@ only by their author.
 ### Anthropic API key
 
 From [console.anthropic.com](https://console.anthropic.com). Extraction uses one model
-call per email, cached by content, so a personal mailbox costs very little.
-
-Only needed for the Claude engine. With the local Ollama engine there is no third
-credential at all - see [Going local](#going-local-free-extraction-with-ollama).
+call per email, cached by content, so a personal mailbox costs very little - and the
+optional [local junk filter](#the-local-junk-filter-optional) cuts it further.
 
 ## Run it
 
@@ -195,7 +193,7 @@ debugging:
 | `run` | Watch the mailbox and create events, headless. |
 | `check` | Validate config and every external dependency, then exit. |
 | `replay FILE.eml` | Push one saved email through the real pipeline. Add `--dry-run`. |
-| `eval-local` | Compare the local Ollama engine against cached Claude verdicts on your own mail. |
+| `eval-local` | Measure the local junk filter against cached Claude verdicts on your own mail. |
 | `healthcheck` | Used by the container `HEALTHCHECK`. |
 
 `replay` is the tool for tuning. Save a message that was handled wrongly, run it, and
@@ -215,53 +213,67 @@ Two settings control how eager the service is:
   emails at higher cost.
 
 Model responses are cached in the state database keyed by content, so replays and
-restarts never re-bill you for the same email. Each engine caches under its own keys,
-so switching engines re-reads mail rather than trusting the other engine's verdicts.
+restarts never re-bill you for the same email.
 
-## Going local: free extraction with Ollama
+## The local junk filter (optional)
 
-The Claude engine reads every email that arrives, ads included, at API prices. The
-local engine moves the whole job onto your own machine: a small open-weight model
-served by [Ollama](https://ollama.com) does the gate and the extraction, and no mail
-ever leaves the box. The trade-offs, honestly stated:
+Claude reads every email that arrives, ads included, at API prices. The junk filter
+puts a free model in front of it: a small open-weight model served by
+[Ollama](https://ollama.com) on the same machine answers one question per email -
+*could this plausibly contain a personal commitment?* - and discards the obvious
+noes (newsletters, promos, digests, receipts for things already over) before they
+cost an API call. On a typical inbox that is most of the mail.
 
-- **Free and private**, after a one-time ~13 GB model download.
-- **Slower** - a few minutes per email on CPU. The pipeline idles on IMAP anyway, so
-  this only matters during a large backfill.
-- **Text only.** Instead of viewing PDFs, the local engine reads their embedded text
-  layer, which covers most e-tickets and itineraries. Image-only attachments and
-  scanned PDFs are not read; the rare booking that lives *only* in pixels is missed.
-  Body text, JSON-LD, and .ics - the tiers that carry almost all real bookings -
-  work identically on both engines.
+The design is deliberately lopsided, because the two mistakes are not equal:
 
-The default model, `gpt-oss:20b`, wants roughly 16 GB of free RAM. Setup:
+- The filter is **only allowed to reject**; anything it is unsure about passes. A
+  wrongly passed email costs one API call; a wrongly discarded one is a booking that
+  silently never reaches your calendar.
+- Emails carrying **.ics or JSON-LD data bypass the filter entirely** - senders embed
+  those for real bookings, and a cheap model gets no veto over them. PDF attachments
+  contribute their text layer, so a "boarding pass attached" email with an empty body
+  still shows the filter its flight.
+- **Every failure fails open.** Ollama down, model not pulled, garbage output: the
+  email goes to Claude exactly as if the filter were off. The filter can only ever
+  save money, never mail.
 
-```sh
-curl -fsSL https://ollama.com/install.sh | sh   # or your preferred install
-ollama pull gpt-oss:20b
+Claude still makes every real decision - the commitment gate, the extraction, the
+categories - so nothing about quality changes.
+
+**Setup.** Run Ollama next to the service and pull the model (roughly 16 GB of free
+RAM for the default). With the Docker deployment, add a sibling container:
+
+```yaml
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    volumes:
+      - ollama:/root/.ollama    # model weights, survives updates
 ```
 
-Then pick **Local model via Ollama** as the engine in the portal's settings (or set
-`llm_backend` to `ollama` in `data/config.json`) and run the checks on the Status
-page - they verify the server is reachable and the model is pulled.
-
-**Measure before you switch.** If the service has been running on Claude, every past
-verdict is cached. `eval-local` replays your real mail through the local model and
-diffs the two engines, without a single API call:
-
 ```sh
-uv run email-to-cal eval-local --days 90
+docker compose up -d
+docker exec ollama ollama pull gpt-oss:20b
 ```
 
-It reports gate agreement, extraction differences, and - most importantly - **missed
-commitments**: emails Claude considered real bookings that the local model rejected,
-which is the failure you would otherwise never see. The exit code is non-zero when any
-exist. Local verdicts computed during the eval are cached, so the switch itself starts
-warm. Expect a long first run: every compared email is a full local inference.
+Then tick **Filter junk with a free local model first** in the portal's Claude card
+(Ollama server under Advanced: `http://ollama:11434` for the sibling container), and
+run the checks on the Status page.
 
-In Docker, install Ollama on the host, keep the `extra_hosts` block from the compose
-example, and set the Ollama server to `http://host.docker.internal:11434` under the
-engine's Advanced settings.
+**Measure before you trust it.** If the service has been running for a while, every
+past Claude verdict is cached. `eval-local` replays your real mail through the filter
+and checks each would-be discard against what Claude actually concluded, without a
+single API call:
+
+```sh
+docker exec -it email-to-cal email-to-cal eval-local --days 90
+```
+
+It reports how many API calls the filter would have saved and - most importantly -
+**wrong discards**: emails Claude considered real bookings that the filter would have
+dropped. The exit code is non-zero when any exist. Filter verdicts computed during the
+eval are cached, so enabling the filter afterwards starts warm.
 
 ## Phone notifications
 

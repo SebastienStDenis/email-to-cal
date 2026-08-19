@@ -8,6 +8,7 @@ import pytest
 
 from email_to_cal.app import Pipeline, _process_one
 from email_to_cal.config import CategoryRule, Settings
+from email_to_cal.local_llm import FilterVerdict, OllamaUnavailable
 from email_to_cal.mailbox import AuthenticationFatal
 from email_to_cal.schema import EmailDocument, ExtractedEvent, ExtractionResult
 from email_to_cal.store import Store
@@ -333,6 +334,98 @@ def test_ordinary_failures_do_not_stop_the_service(settings: Settings) -> None:
     _process_one(
         pipeline, FakeMailbox(), store, 1, fixture_bytes("concert_ics.eml")
     )  # must not raise
+    store.close()
+
+
+class FakeFilter:
+    """A prefilter with a scripted verdict, counting how often it is consulted."""
+
+    def __init__(self, passes: bool = True, error: Exception | None = None) -> None:
+        self.passes = passes
+        self.error = error
+        self.calls = 0
+
+    def judge(self, doc: EmailDocument) -> FilterVerdict:
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        return FilterVerdict(could_contain_commitment=self.passes, reasoning="scripted")
+
+
+def build_filtered(
+    settings: Settings, result: ExtractionResult, prefilter: FakeFilter
+) -> tuple[Pipeline, StubExtractor, Store]:
+    store = Store(settings.state_db)
+    extractor = StubExtractor(result)
+    pipeline = Pipeline(settings, store, extractor, StubCalendar(), prefilter=prefilter)  # type: ignore[arg-type]
+    return pipeline, extractor, store
+
+
+def committed_result() -> ExtractionResult:
+    return ExtractionResult(
+        is_committed=True, gate_reasoning="Confirmed.", events=[concert_event()]
+    )
+
+
+def test_filtered_junk_never_reaches_the_paid_model(settings: Settings) -> None:
+    prefilter = FakeFilter(passes=False)
+    pipeline, extractor, store = build_filtered(settings, committed_result(), prefilter)
+
+    outcome = pipeline.process(fixture_bytes("promo_image_heavy.eml"))
+
+    assert not outcome.committed
+    assert outcome.reason == "filtered locally: scripted"
+    assert extractor.calls == 0
+    store.close()
+
+
+def test_a_passing_verdict_hands_the_email_to_the_extractor(settings: Settings) -> None:
+    prefilter = FakeFilter(passes=True)
+    pipeline, extractor, store = build_filtered(settings, committed_result(), prefilter)
+
+    outcome = pipeline.process(fixture_bytes("restaurant_plain.eml"))
+
+    assert outcome.committed
+    assert prefilter.calls == 1
+    assert extractor.calls == 1
+    store.close()
+
+
+def test_structured_emails_bypass_the_filter(settings: Settings) -> None:
+    """A .ics ticket goes straight to Claude; the cheap model gets no veto over it."""
+    prefilter = FakeFilter(passes=False)  # would wrongly discard, so it must not be asked
+    pipeline, extractor, store = build_filtered(settings, committed_result(), prefilter)
+
+    outcome = pipeline.process(fixture_bytes("concert_ics.eml"))
+
+    assert outcome.committed
+    assert prefilter.calls == 0
+    assert extractor.calls == 1
+    store.close()
+
+
+def test_an_unreachable_filter_fails_open_to_the_paid_model(settings: Settings) -> None:
+    """The filter is a cost optimisation; an Ollama outage must never drop mail."""
+    prefilter = FakeFilter(error=OllamaUnavailable("connection refused"))
+    pipeline, extractor, store = build_filtered(settings, committed_result(), prefilter)
+
+    outcome = pipeline.process(fixture_bytes("restaurant_plain.eml"))
+
+    assert outcome.committed
+    assert extractor.calls == 1
+    store.close()
+
+
+def test_filter_verdicts_are_cached(settings: Settings) -> None:
+    prefilter = FakeFilter(passes=False)
+    pipeline, extractor, store = build_filtered(settings, committed_result(), prefilter)
+    raw = fixture_bytes("promo_image_heavy.eml")
+
+    pipeline.process(raw, skip_seen=False)
+    pipeline.process(raw, skip_seen=False)
+
+    assert prefilter.calls == 1
+    assert extractor.calls == 0
     store.close()
 
 

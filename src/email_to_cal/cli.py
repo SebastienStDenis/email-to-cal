@@ -19,7 +19,8 @@ from .app import Pipeline, run
 from .checks import run_checks
 from .config import Settings
 from .gcal import CalendarClient
-from .llm import make_extractor
+from .llm import Extractor
+from .local_llm import make_prefilter
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -99,7 +100,9 @@ def _cmd_replay(settings: Settings, args: argparse.Namespace) -> int:
 
     with Store(settings.state_db) as store:
         calendar = None if settings.dry_run else CalendarClient(settings, store)
-        pipeline = Pipeline(settings, store, make_extractor(settings), calendar)
+        pipeline = Pipeline(
+            settings, store, Extractor(settings), calendar, prefilter=make_prefilter(settings)
+        )
         # Replay is a debugging tool: always re-run, even for mail already handled.
         outcome = pipeline.process(raw, skip_seen=False)
 
@@ -119,7 +122,7 @@ def _cmd_replay(settings: Settings, args: argparse.Namespace) -> int:
 
 
 def _cmd_eval_local(settings: Settings, args: argparse.Namespace) -> int:
-    """Diff the local Ollama extractor against cached Claude verdicts on real mail."""
+    """Measure the local pre-filter against cached Claude verdicts on real mail."""
     from .eval_local import run_eval
 
     return run_eval(
@@ -188,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
 
     eval_local = sub.add_parser(
         "eval-local",
-        help="compare the local Ollama model against cached Claude verdicts on your mail",
+        help="measure the local pre-filter against cached Claude verdicts on your mail",
     )
     eval_local.add_argument("eml", nargs="*", help=".eml files to evaluate instead of IMAP")
     eval_local.add_argument(

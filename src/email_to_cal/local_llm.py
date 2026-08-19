@@ -1,10 +1,19 @@
-"""Local extraction through an Ollama server: the same contract as llm.py, run on-box.
+"""A free local pre-filter in front of the paid extraction call.
 
-The local path is text-only. Attachments are never sent as vision input; instead the
-text layer of PDF attachments is extracted here and appended to the rendered email,
-which covers e-tickets and itineraries whose body is just "see attached". Image-only
-attachments (and scanned PDFs) contribute nothing, by design - the model that reads
-them well lives behind the Anthropic backend.
+A small model on an Ollama server answers one recall-biased question per email: could
+this plausibly contain a personal commitment? Obvious junk - newsletters, promos,
+digests, receipts for things already over - is discarded without ever reaching the
+API; everything else goes to Claude, which still makes every real decision. The filter
+is deliberately not asked the hard question (is this a commitment?); small models get
+that wrong in ways that lose real bookings.
+
+Fail open, always: an unreachable Ollama or unusable output means the email goes to
+Claude as if the filter were off. The filter can only ever save money, never mail.
+
+The filter is text-only, but PDF attachments contribute their text layer, so a
+"boarding pass attached" email with an empty body still shows the filter its flight.
+Emails with structured data (.ics, JSON-LD) bypass the filter entirely - senders embed
+those for real bookings, and a cheap model should not get a veto over them.
 """
 
 from __future__ import annotations
@@ -16,11 +25,12 @@ from io import BytesIO
 from typing import Any
 
 import httpx
+from pydantic import BaseModel, Field
 from pypdf import PdfReader
 
 from .config import Settings
-from .llm import SYSTEM_PROMPT, _categories_block, _render_email
-from .schema import EmailDocument, ExtractionResult
+from .llm import _render_email
+from .schema import EmailDocument
 
 log = logging.getLogger(__name__)
 
@@ -28,31 +38,38 @@ log = logging.getLogger(__name__)
 MAX_PDF_TEXT_CHARS = 15000
 MAX_PDF_PAGES = 10
 
-_OUTPUT_ADDENDUM = """\
+FILTER_PROMPT = """\
+You are a cheap pre-filter in front of a more capable model that turns emails into
+calendar events for the recipient. Your only job is to discard email that obviously
+cannot contain a personal booking, reservation, ticket, appointment, or invitation.
 
+Set could_contain_commitment to false only when the email is clearly one of these:
+marketing or promotional mail, newsletters and digests, price alerts and deal lists,
+social-media or app notifications, account/security/billing notices, receipts for
+purchases or rides that are already over with nothing upcoming, shipping updates, or
+automated reports.
 
-# Output
+Set it to true for everything else, including anything you are unsure about. Bookings,
+order and reservation confirmations, tickets, itineraries, schedule or gate changes,
+check-in notices, reminders, and personal invitations must always pass - you are not
+deciding whether the email really is a commitment; the capable model does that. An
+email you wrongly discard is lost forever; an email you wrongly pass merely costs one
+extra look. When in doubt, true.
 
-Answer with a single JSON object conforming to this JSON schema, and nothing else. \
-When is_committed is false, events is an empty list.
-
-{schema}
+Answer with a single JSON object: {"could_contain_commitment": true or false,
+"reasoning": "one short sentence"}.
 """
 
 
+class FilterVerdict(BaseModel):
+    """The filter's one-bit answer, plus a sentence for the logs."""
+
+    could_contain_commitment: bool
+    reasoning: str = Field(description="One short sentence justifying the decision.")
+
+
 class OllamaUnavailable(RuntimeError):
-    """The Ollama server is unreachable or lacks the model. Transient: hold the mail."""
-
-
-def local_system_prompt(settings: Settings) -> str:
-    """The shared gate prompt, plus the schema the grammar will enforce.
-
-    Ollama's `format` constrains the output shape mechanically, but the model never
-    sees the grammar - the schema goes in the prompt too so the field descriptions
-    (naive local times, IATA codes, title style) actually reach it.
-    """
-    schema = json.dumps(ExtractionResult.model_json_schema(), sort_keys=True)
-    return SYSTEM_PROMPT + _categories_block(settings) + _OUTPUT_ADDENDUM.format(schema=schema)
+    """The Ollama server is unreachable or lacks the model. The filter fails open."""
 
 
 def _pdf_text(data: bytes) -> str:
@@ -81,35 +98,35 @@ def _pdf_texts(doc: EmailDocument) -> list[tuple[str, str]]:
 
 
 def render_local(doc: EmailDocument, settings: Settings) -> str:
-    """The email as the local model reads it: text tiers plus PDF text layers."""
+    """The email as the filter reads it: the text tiers plus PDF text layers."""
     return _render_email(doc, settings, pdf_texts=_pdf_texts(doc))
 
 
-def local_cache_material(doc: EmailDocument, settings: Settings) -> str:
-    """Cache material for the local backend; a separate namespace from the Claude keys.
-
-    Attachments hash by content: the PDF text layer is derived from them, so hashing
-    the bytes covers it. The assembled prompt hash covers the gate, the categories,
-    and the schema addendum at once.
-    """
-    return json.dumps(
+def filter_cache_key(doc: EmailDocument, settings: Settings) -> str:
+    """Filter verdicts cache in their own namespace, apart from the Claude keys."""
+    material = json.dumps(
         {
-            "backend": "ollama",
+            "kind": "local-filter",
             "message_id": doc.message_id,
             "body": doc.body_text,
             "json_ld": doc.json_ld,
             "ics": doc.ics_events,
             "attachments": sorted(hashlib.sha256(a.data).hexdigest() for a in doc.attachments),
-            "prompt": hashlib.sha256(local_system_prompt(settings).encode()).hexdigest(),
+            "prompt": hashlib.sha256(FILTER_PROMPT.encode()).hexdigest(),
             "model": settings.ollama_model,
         },
         sort_keys=True,
         default=str,
     )
+    return hashlib.sha256(material.encode()).hexdigest()
 
 
-class OllamaExtractor:
-    """Wraps an Ollama server with the prompt, the schema grammar, and one retry."""
+def make_prefilter(settings: Settings) -> OllamaFilter | None:
+    return OllamaFilter(settings) if settings.local_filter_enabled else None
+
+
+class OllamaFilter:
+    """Asks an Ollama server the one cheap question, with the shape grammar-enforced."""
 
     def __init__(self, settings: Settings, client: httpx.Client | None = None) -> None:
         self._settings = settings
@@ -119,45 +136,19 @@ class OllamaExtractor:
             timeout=httpx.Timeout(settings.ollama_timeout_seconds, connect=10.0),
         )
 
-    def extract(self, doc: EmailDocument) -> ExtractionResult:
-        messages: list[dict[str, str]] = [
-            {"role": "system", "content": local_system_prompt(self._settings)},
-            {"role": "user", "content": render_local(doc, self._settings)},
-        ]
-        last_error = ""
-        for attempt in range(2):
-            content = self._chat(messages)
-            try:
-                return ExtractionResult.model_validate_json(content)
-            except ValueError as exc:
-                # The grammar guarantees the shape but not the value constraints
-                # (confidence bounds, category names), so feed the error back once.
-                last_error = str(exc)
-                log.warning(
-                    "local model output failed validation (attempt %d): %s",
-                    attempt + 1,
-                    last_error[:500],
-                )
-                messages = [
-                    *messages,
-                    {"role": "assistant", "content": content},
-                    {
-                        "role": "user",
-                        "content": "That JSON failed validation:\n"
-                        f"{last_error}\n\nReply again with one corrected JSON object.",
-                    },
-                ]
-        raise RuntimeError(f"local model produced unusable output: {last_error[:500]}")
-
-    def _chat(self, messages: list[dict[str, str]]) -> str:
+    def judge(self, doc: EmailDocument) -> FilterVerdict:
+        """One verdict for one email. Raises rather than guessing; callers fail open."""
         settings = self._settings
         payload: dict[str, Any] = {
             "model": settings.ollama_model,
             "stream": False,
             "keep_alive": settings.ollama_keep_alive,
-            "format": ExtractionResult.model_json_schema(),
+            "format": FilterVerdict.model_json_schema(),
             "options": {"num_ctx": settings.ollama_num_ctx},
-            "messages": messages,
+            "messages": [
+                {"role": "system", "content": FILTER_PROMPT},
+                {"role": "user", "content": render_local(doc, settings)},
+            ],
         }
         try:
             response = self._client.post("/api/chat", json=payload)
@@ -171,7 +162,5 @@ class OllamaExtractor:
         if response.status_code >= 500:
             raise OllamaUnavailable(f"Ollama error {response.status_code}: {response.text[:300]}")
         response.raise_for_status()
-        content = response.json().get("message", {}).get("content", "")
-        if not str(content).strip():
-            raise RuntimeError("Ollama returned an empty response")
-        return str(content)
+        content = str(response.json().get("message", {}).get("content", ""))
+        return FilterVerdict.model_validate_json(content)

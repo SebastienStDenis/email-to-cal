@@ -11,8 +11,8 @@ import anthropic
 
 from .config import Settings
 from .gcal import CalendarClient, CredentialsExpired, build_event_body
-from .llm import SupportsExtract, cache_key, make_extractor
-from .local_llm import OllamaUnavailable
+from .llm import Extractor, cache_key
+from .local_llm import FilterVerdict, OllamaFilter, filter_cache_key, make_prefilter
 from .mailbox import AuthenticationFatal, Mailbox, sleep_with_backoff
 from .mime import parse_email
 from .notify import Notifier
@@ -41,13 +41,15 @@ class Pipeline:
         self,
         settings: Settings,
         store: Store,
-        extractor: SupportsExtract,
+        extractor: Extractor,
         calendar: CalendarClient | None,
+        prefilter: OllamaFilter | None = None,
     ) -> None:
         self._settings = settings
         self._store = store
         self._extractor = extractor
         self._calendar = calendar
+        self._prefilter = prefilter
         self.notifier = Notifier(settings)
 
     def process(self, raw: bytes, *, skip_seen: bool = True) -> Outcome:
@@ -72,6 +74,16 @@ class Pipeline:
             doc.source_tier,
             len(doc.attachments),
         )
+
+        verdict = self._prefilter_cached(doc)
+        if verdict is not None and not verdict.could_contain_commitment:
+            log.info("filtered locally %s: %s", doc.subject[:60], verdict.reasoning)
+            return Outcome(
+                message_id=doc.message_id,
+                subject=doc.subject,
+                committed=False,
+                reason=f"filtered locally: {verdict.reasoning}",
+            )
 
         result = self._extract_cached(doc)
         outcome = Outcome(
@@ -99,6 +111,29 @@ class Pipeline:
             self._emit(doc, event, outcome)
 
         return outcome
+
+    def _prefilter_cached(self, doc: EmailDocument) -> FilterVerdict | None:
+        """The local filter's verdict, or None when the email must go to Claude.
+
+        None comes back when the filter is off, when the email carries structured data
+        (.ics / JSON-LD marks a near-certain real booking - the cheap model gets no
+        veto over those), and on any filter failure. The filter is a cost optimisation:
+        every failure mode falls through to the paid path, never to dropped mail.
+        """
+        if self._prefilter is None or doc.has_structured_source:
+            return None
+        key = filter_cache_key(doc, self._settings)
+        cached = self._store.get_cached(key)
+        if cached is not None:
+            return FilterVerdict.model_validate(cached)
+        try:
+            verdict = self._prefilter.judge(doc)
+        except Exception:
+            log.warning("local filter failed; sending %s to Claude", doc.subject[:60])
+            log.debug("local filter failure detail", exc_info=True)
+            return None
+        self._store.put_cached(key, verdict.model_dump(mode="json"))
+        return verdict
 
     def _extract_cached(self, doc: EmailDocument) -> ExtractionResult:
         key = cache_key(doc, self._settings)
@@ -161,7 +196,9 @@ def run(settings: Settings, stopping: threading.Event) -> None:
         if calendar is not None:
             _bootstrap_calendars(settings, calendar)
 
-        pipeline = Pipeline(settings, store, make_extractor(settings), calendar)
+        pipeline = Pipeline(
+            settings, store, Extractor(settings), calendar, prefilter=make_prefilter(settings)
+        )
         mailbox = Mailbox(settings, store)
         attempt = 0
         store.beat()
@@ -219,13 +256,6 @@ def _process_one(pipeline: Pipeline, mailbox: Mailbox, store: Store, uid: int, r
     except CredentialsExpired:
         log.critical("Google credentials are no longer usable", exc_info=True)
         raise AuthenticationFatal("Google credentials are no longer usable") from None
-    except OllamaUnavailable:
-        # A down Ollama is an outage, not a poison message: leave the message unacked
-        # so the cursor holds without burning a failure attempt, and let the outer loop
-        # back off and retry. Acking with an error would write real mail off after
-        # MAX_ATTEMPTS while the server was merely restarting.
-        log.warning("Ollama unavailable; holding UID %d and backing off", uid, exc_info=True)
-        raise
     except Exception as exc:
         log.error("failed to process UID %d", uid, exc_info=True)
         pipeline.notifier.failure(f"UID {uid}: {type(exc).__name__}: {exc}")
