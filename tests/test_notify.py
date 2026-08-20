@@ -49,6 +49,35 @@ def test_created_events_push_quietly(monkeypatch: pytest.MonkeyPatch) -> None:
     assert call["user"] == "u123"
     assert call["message"] == "Radiohead at The O2 on Music"
     assert call["priority"] == -1
+    assert "url" not in call
+
+
+def test_created_events_carry_a_tappable_link_to_the_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    post = RecordingPost()
+    monkeypatch.setattr("email_to_cal.notify.httpx.post", post)
+
+    Notifier(configured()).created(
+        "Radiohead at The O2", "Music", url="https://www.google.com/calendar/event?eid=abc"
+    )
+
+    (call,) = post.calls
+    assert call["url"] == "https://www.google.com/calendar/event?eid=abc"
+    assert call["url_title"] == "Open in calendar"
+
+
+def test_an_oversized_link_is_dropped_so_the_push_still_arrives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    post = RecordingPost()
+    monkeypatch.setattr("email_to_cal.notify.httpx.post", post)
+
+    Notifier(configured()).created("Radiohead at The O2", "Music", url="https://x/" + "y" * 512)
+
+    (call,) = post.calls
+    assert "url" not in call
+    assert call["message"] == "Radiohead at The O2 on Music"
 
 
 def test_failures_escalate_from_normal_to_high_priority(

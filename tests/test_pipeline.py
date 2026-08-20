@@ -53,9 +53,12 @@ class StubCalendar:
         self.lookups.append((calendar_id, booking_reference))
         return self.existing
 
-    def insert(self, calendar_id: str, body: dict[str, Any]) -> str:
+    def insert(self, calendar_id: str, body: dict[str, Any]) -> dict[str, Any]:
         self.inserted.append((calendar_id, body))
-        return str(body["id"])
+        return {
+            "id": body["id"],
+            "htmlLink": f"https://www.google.com/calendar/event?eid={body['id']}",
+        }
 
 
 def concert_event(confidence: float = 0.95, category: str | None = "music") -> ExtractedEvent:
@@ -287,6 +290,7 @@ def test_created_events_notify_the_phone_but_dry_runs_do_not(
 
     pipeline.process(fixture_bytes("concert_ics.eml"))
     assert [push["message"] for push in pushes] == ["Radiohead at The O2 on Music"]
+    assert pushes[0]["url"].startswith("https://www.google.com/calendar/event?eid=")
 
     settings.dry_run = True
     pipeline.process(fixture_bytes("concert_ics.eml"), skip_seen=False)

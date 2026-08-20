@@ -332,15 +332,18 @@ class CalendarClient:
             if not page_token:
                 return None
 
-    def insert(self, calendar_id: str, body: dict[str, Any]) -> str:
-        """Insert an event, treating an existing id as success."""
+    def insert(self, calendar_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Insert an event and return the stored resource, treating an existing id as
+        success."""
         try:
-            created = self._retry(self._service.events().insert(calendarId=calendar_id, body=body))
-            return str(created["id"])
+            created: dict[str, Any] = self._retry(
+                self._service.events().insert(calendarId=calendar_id, body=body)
+            )
+            return created
         except HttpError as exc:
             if exc.resp.status == 409:
                 log.info("event %s already exists on %s", body["id"], calendar_id)
-                return str(body["id"])
+                return {"id": body["id"]}
             raise
 
     def _retry(self, request: Any, attempts: int = 5) -> dict[str, Any]:

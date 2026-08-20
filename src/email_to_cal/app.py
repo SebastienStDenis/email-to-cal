@@ -178,11 +178,12 @@ class Pipeline:
                 )
                 return
 
-        event_id = self._calendar.insert(calendar_id, body)
+        created = self._calendar.insert(calendar_id, body)
+        event_id = str(created["id"])
         self._store.record_event(event_id, doc.message_id, calendar_id, event.title)
         log.info("created %r on %r (%s)", event.title, calendar_name, event_id)
         outcome.created.append((calendar_name, event.title))
-        self.notifier.created(event.title, calendar_name)
+        self.notifier.created(event.title, calendar_name, url=created.get("htmlLink"))
 
 
 def run(settings: Settings, stopping: threading.Event) -> None:
