@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from typing import Any
 
 import anthropic
@@ -10,23 +11,27 @@ import httpx
 import pytest
 
 from email_to_cal.app import RETRY_DELAYS, NoEventsFound, Pipeline, _handle
-from email_to_cal.config import Settings
+from email_to_cal.config import CategoryRule, Settings
 from email_to_cal.mailbox import AuthenticationFatal, FlaggedMail
 from email_to_cal.schema import EmailDocument, ExtractedEvent, ExtractionResult
 from email_to_cal.store import Store
 
 from .conftest import fixture_bytes
 
-CALENDAR_URL = "https://example.test/calendars/home/"
+CALENDAR_URLS = {
+    "Bookings": "https://example.test/calendars/home/",
+    "Music": "https://example.test/calendars/music/",
+}
 
 
-def concert(title: str = "Radiohead at the O2") -> ExtractedEvent:
+def concert(title: str = "Radiohead at the O2", category: str | None = None) -> ExtractedEvent:
     return ExtractedEvent(
         kind="concert",
         title=title,
         all_day=False,
         start_local="2026-09-14T20:00:00",
         start_tz="Europe/London",
+        category=category,
     )
 
 
@@ -47,13 +52,13 @@ class StubExtractor:
 class StubCalendar:
     def __init__(self, error: Exception | None = None) -> None:
         self.error = error
-        self.written: list[tuple[str, bytes]] = []
+        self.written: list[tuple[str, str]] = []
 
     def put(self, calendar_url: str, uid: str, ics: bytes) -> None:
-        assert calendar_url == CALENDAR_URL
+        assert calendar_url in CALENDAR_URLS.values()
         if self.error is not None:
             raise self.error
-        self.written.append((uid, ics))
+        self.written.append((calendar_url, uid))
 
 
 class StubMailbox:
@@ -66,11 +71,13 @@ class StubMailbox:
 
 class StubNotifier:
     def __init__(self) -> None:
-        self.created_pushes: list[tuple[list[str], str, str | None]] = []
+        self.created_pushes: list[tuple[list[str], list[str], str | None]] = []
         self.failed_pushes: list[tuple[str, str, str | None]] = []
 
-    def created(self, events: list[str], calendar: str, link: str | None) -> None:
-        self.created_pushes.append((events, calendar, link))
+    def created(self, events: Sequence[Any], link: str | None) -> None:
+        self.created_pushes.append(
+            ([e.describe() for e in events], [e.calendar for e in events], link)
+        )
 
     def failed(self, subject: str, detail: str, link: str | None) -> None:
         self.failed_pushes.append((subject, detail, link))
@@ -84,7 +91,7 @@ def build(
 ) -> tuple[Pipeline, StubExtractor, StubCalendar]:
     extractor = StubExtractor(result)
     calendar = calendar or StubCalendar()
-    pipeline = Pipeline(settings, store, extractor, calendar, CALENDAR_URL)  # type: ignore[arg-type]
+    pipeline = Pipeline(settings, store, extractor, calendar, CALENDAR_URLS)  # type: ignore[arg-type]
     return pipeline, extractor, calendar
 
 
@@ -110,9 +117,9 @@ def test_a_flagged_email_is_written_unflagged_and_pushed(settings: Settings, tmp
         assert store.list_failures() == []
         assert len(store.recent_events()) == 1
 
-        events, calendar, link = notifier.created_pushes[0]
+        events, calendars, link = notifier.created_pushes[0]
         assert events == ["Radiohead at the O2 - Mon 14 Sep 20:00"]
-        assert calendar == "Bookings"
+        assert calendars == ["Bookings"]
         # Success opens the calendar on the day, not the email it came from.
         assert link is not None and link.startswith("calshow:")
 
@@ -129,7 +136,46 @@ def test_every_event_in_one_email_is_written(settings: Settings) -> None:
 
         # A return flight is two events, and each gets its own resource on the server.
         assert [built.title for built in written] == ["Outbound", "Return"]
-        assert len({uid for uid, _ in calendar.written}) == 2
+        assert len({uid for _, uid in calendar.written}) == 2
+
+
+def test_events_route_to_their_category_calendar(settings: Settings) -> None:
+    settings.categories = [
+        CategoryRule(name="music", description="Concerts and gigs.", calendar="Music")
+    ]
+    with Store(settings.state_db) as store:
+        result = ExtractionResult(
+            events=[concert("Radiohead", category="music"), concert("Dentist")]
+        )
+        pipeline, _, calendar = build(settings, store, result)
+        doc = EmailDocument(
+            message_id="<a@b>", subject="Mixed", sender="x", to="y", date=None, body_text=""
+        )
+
+        written = pipeline.process(doc)
+
+        assert [built.calendar for built in written] == ["Music", "Bookings"]
+        # An unmatched category falls back to the main calendar rather than failing.
+        assert [url for url, _ in calendar.written] == [
+            CALENDAR_URLS["Music"],
+            CALENDAR_URLS["Bookings"],
+        ]
+
+
+def test_an_unknown_category_falls_back_to_the_main_calendar(settings: Settings) -> None:
+    settings.categories = [
+        CategoryRule(name="music", description="Concerts and gigs.", calendar="Music")
+    ]
+    with Store(settings.state_db) as store:
+        result = ExtractionResult(events=[concert("Something", category="invented")])
+        pipeline, _, _ = build(settings, store, result)
+        doc = EmailDocument(
+            message_id="<a@b>", subject="s", sender="x", to="y", date=None, body_text=""
+        )
+
+        # A name the model invented must not send the event to a calendar that does not
+        # exist, which would fail the whole email.
+        assert pipeline.process(doc)[0].calendar == "Bookings"
 
 
 def test_an_email_with_nothing_to_add_keeps_its_flag_and_says_so(settings: Settings) -> None:

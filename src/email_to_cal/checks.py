@@ -96,7 +96,8 @@ def _check_pushover(settings: Settings) -> CheckResult:
 
 def _check_calendar(settings: Settings) -> CheckResult:
     try:
-        url = CalendarClient(settings).resolve(settings.calendar_name)
+        resolved = CalendarClient(settings).resolve(settings.calendars)
     except Exception as exc:
         return CheckResult("calendar", False, str(exc))
-    return CheckResult("calendar", True, f"{settings.calendar_name!r} -> {url}")
+    listed = ", ".join(f"{name!r} -> {url}" for name, url in sorted(resolved.items()))
+    return CheckResult("calendar", True, listed)

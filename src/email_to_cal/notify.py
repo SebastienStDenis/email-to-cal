@@ -8,6 +8,8 @@ the original email in Mail.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
+from typing import Protocol
 
 import httpx
 
@@ -24,6 +26,14 @@ MAX_MESSAGE_LENGTH = 1024
 MAX_URL_LENGTH = 512
 
 
+class Written(Protocol):
+    """One created event, as a notification needs to see it."""
+
+    calendar: str
+
+    def describe(self) -> str: ...
+
+
 class Notifier:
     """Fire-and-forget pushes; a no-op until both Pushover keys are configured.
 
@@ -34,16 +44,22 @@ class Notifier:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
 
-    def created(self, events: list[str], calendar: str, link: str | None) -> None:
+    def created(self, events: Sequence[Written], link: str | None) -> None:
+        """One push per email, however many events and calendars it produced."""
+        count = "Event added" if len(events) == 1 else f"{len(events)} events added"
+        calendars = {event.calendar for event in events}
+
+        if len(calendars) == 1:
+            title = f"{count} to {calendars.pop()}"
+            lines = [event.describe() for event in events]
+        else:
+            # Naming one calendar in the title would be wrong for the other events, so
+            # each line carries its own.
+            title = count
+            lines = [f"{event.describe()} → {event.calendar}" for event in events]
+
         # Quiet priority: informational, so no chime when a 3am email books something.
-        title = "Event added" if len(events) == 1 else f"{len(events)} events added"
-        self._send(
-            f"{title} to {calendar}",
-            "\n".join(events),
-            priority=-1,
-            link=link,
-            link_title="Open in Calendar",
-        )
+        self._send(title, "\n".join(lines), priority=-1, link=link, link_title="Open in Calendar")
 
     def failed(self, subject: str, detail: str, link: str | None) -> None:
         self._send(

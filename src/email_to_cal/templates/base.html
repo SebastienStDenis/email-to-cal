@@ -177,6 +177,12 @@
   summary:hover { color: var(--text); }
   details[open] summary { margin-bottom: .9rem; }
 
+  /* Category rows */
+  .category-row {
+    display: grid; grid-template-columns: 8.5rem 1fr 8.5rem auto; gap: .5rem;
+    margin-bottom: .5rem; align-items: start;
+  }
+
   /* Timezone autocomplete */
   .autocomplete { position: relative; }
   .suggestions {
@@ -191,6 +197,8 @@
 
   @media (max-width: 40rem) {
     .grid { grid-template-columns: 1fr; }
+    .category-row { grid-template-columns: 1fr; border: 1px solid var(--border);
+      border-radius: 8px; padding: .7rem; }
     .header-inner { padding: .75rem 1rem; }
     main { padding: 1.25rem 1rem 4rem; }
   }

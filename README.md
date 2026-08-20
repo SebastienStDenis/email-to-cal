@@ -2,10 +2,10 @@
 
 Flag an email in Mail. It becomes a calendar event.
 
-That is the whole interface. You decide what deserves a calendar entry by flagging it -
-the red flag, from your phone, your laptop, anywhere - and the service reads that email,
-writes the events it describes to your iCloud calendar, and takes the flag off. If it
-cannot, the flag stays on and your phone tells you why.
+That is the whole interface. You decide what deserves a calendar entry by flagging it
+blue - from your phone, your laptop, anywhere - and the service reads that email, writes
+the events it describes to your iCloud calendar, and takes the flag off. If it cannot,
+the flag stays on and your phone tells you why.
 
 One Apple ID and one app-specific password cover both the mail and the calendar.
 
@@ -15,7 +15,7 @@ One Apple ID and one app-specific password cover both the mail and the calendar.
 iCloud IMAP           MIME extraction      model            CalDAV
 every folder     →    JSON-LD           →  extract the   →  write to iCloud
 search for the        .ics                 events           unflag the message
-red flag              text/plain                            push to your phone
+blue flag             text/plain                            push to your phone
                       HTML → text
                       PDF / images
 ```
@@ -56,8 +56,9 @@ App-Specific Passwords. Give this service its own so you can revoke it independe
 
 ### A calendar to write to
 
-Create it in the Calendar app, on any iCloud account, and note its exact name. The
-service writes there and nowhere else.
+Create it in the Calendar app, on any iCloud account, and note its exact name. Every
+calendar you configure has to exist already - the service writes to them and never
+creates one.
 
 ### An Anthropic API key
 
@@ -77,11 +78,11 @@ uv run email-to-cal serve
 Open [http://127.0.0.1:8080](http://127.0.0.1:8080) and the portal takes it from there:
 
 1. **Settings** - your iCloud address and app password, an Anthropic key, the name of
-   your calendar. Save.
-2. **Status** - **Check connections** exercises the mailbox, the model, and the calendar
+   your main calendar. Save.
+2. **Status** - **Check connections** exercises the mailbox, the model, and the calendars
    end to end, and lists every calendar it can see.
-3. Flag an email in Mail. Within a minute the event is on your calendar and the flag is
-   gone.
+3. Flag an email blue in Mail. Within a minute the event is on your calendar and the flag
+   is gone.
 
 Everything lands in `data/` inside your checkout: the configuration (`config.json`) and
 the state database. The other commands read the same configuration, so once set up you
@@ -135,17 +136,36 @@ docker run -d --name email-to-cal --restart unless-stopped \
 
 ## Which flag, and which mail
 
-The **red** flag, which is the plain flag every Mail client sets by default. Apple stores
-flag colours as `\Flagged` plus a `$MailFlagBitN` keyword per colour, and red is the one
-with no colour bits - so a message flagged red on an iPhone reads as red everywhere.
-Rename it to whatever you like in Mail; the colour is what counts. Your other flag
-colours keep whatever meaning you already give them.
+The **blue** flag by default, changeable to any of the seven in Settings. Apple stores a
+flag colour as `\Flagged` plus a `$MailFlagBitN` keyword per bit of the colour index, so
+a message flagged blue on an iPhone reads as blue everywhere. Rename the colour to
+whatever you like in Mail - "Calendar", say; the colour is what counts, not the label.
+
+Only the configured colour is processed. Red is left alone by default because it is what
+every Mail client reaches for first, and your other colours keep whatever meaning you
+already give them.
 
 Every folder is searched on each pass, so it makes no difference where the mail is filed
 or whether you file it after flagging. Junk, Deleted Messages, and Drafts are skipped.
 
 Nothing else about the mailbox is touched: messages are fetched without marking them
 read, and the only write is clearing the flag once the events are on your calendar.
+
+## Categories
+
+Everything lands on your main calendar unless you say otherwise. A category routes a kind
+of event to its own calendar, and the description is what the model reads - so it says
+what belongs, not just what the category is called:
+
+| Name | Description | Calendar |
+| --- | --- | --- |
+| travel | Flights, trains, and hotel stays. | Travel |
+| music | Concerts and gigs I have tickets for. | Music |
+
+An event that matches no category, or that comes back with a name you never configured,
+goes to the main calendar. Every calendar named here has to exist in the Calendar app
+before the watcher starts; a name that matches nothing fails at startup rather than on
+the first email that routes to it.
 
 ## When it cannot be done
 

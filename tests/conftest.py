@@ -30,7 +30,7 @@ def settings(tmp_path: Path) -> Settings:
         anthropic_api_key="test-key",
         state_db=tmp_path / "state.sqlite",
         default_timezone="Europe/Zurich",
-        calendar_name="Bookings",
+        default_calendar="Bookings",
     )
 
 

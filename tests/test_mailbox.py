@@ -8,7 +8,12 @@ import pytest
 from imap_tools.errors import MailboxLoginError
 
 from email_to_cal.config import Settings
-from email_to_cal.mailbox import RED_FLAG_CRITERIA, AuthenticationFatal, Mailbox
+from email_to_cal.mailbox import (
+    FLAG_COLOURS,
+    AuthenticationFatal,
+    Mailbox,
+    search_criteria,
+)
 
 from .conftest import fixture_bytes
 
@@ -85,7 +90,7 @@ def connected(settings: Settings, box: FakeBox, monkeypatch: pytest.MonkeyPatch)
     return mailbox
 
 
-def test_only_red_flagged_mail_is_offered(
+def test_only_the_configured_colour_is_offered(
     settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     raw = fixture_bytes("flight_jsonld.eml")
@@ -96,9 +101,26 @@ def test_only_red_flagged_mail_is_offered(
 
     assert [(m.folder, m.uid) for m in found] == [("INBOX", 7)]
     assert found[0].raw == raw
-    # Every colour of Apple flag sets \Flagged; only red sets none of the colour bits.
-    assert box.searches == [("INBOX", RED_FLAG_CRITERIA)]
-    assert "UNKEYWORD $MailFlagBit0" in RED_FLAG_CRITERIA
+    assert box.searches == [("INBOX", search_criteria(settings.flag_colour))]
+
+
+@pytest.mark.parametrize(
+    ("colour", "criteria"),
+    [
+        # Every colour sets \Flagged, so the bits have to be named both ways round or
+        # a message flagged some other colour would be swept up too.
+        ("red", "FLAGGED UNKEYWORD $MailFlagBit0 UNKEYWORD $MailFlagBit1 UNKEYWORD $MailFlagBit2"),
+        ("blue", "FLAGGED UNKEYWORD $MailFlagBit0 UNKEYWORD $MailFlagBit1 KEYWORD $MailFlagBit2"),
+        ("green", "FLAGGED KEYWORD $MailFlagBit0 KEYWORD $MailFlagBit1 UNKEYWORD $MailFlagBit2"),
+    ],
+)
+def test_each_colour_searches_for_itself_alone(colour: str, criteria: str) -> None:
+    assert search_criteria(colour) == criteria
+
+
+def test_every_colour_is_distinguishable_from_every_other() -> None:
+    # Two colours sharing a search would make one of them silently process the other.
+    assert len({search_criteria(colour) for colour in FLAG_COLOURS}) == len(FLAG_COLOURS)
 
 
 def test_every_folder_is_searched_because_mail_moves(
@@ -146,7 +168,24 @@ def test_unflagging_clears_the_flag_in_the_right_folder(
 
     mailbox.unflag(mail)
 
-    assert box.flag_calls == [("Archive", "3", "\\Flagged", False)]
+    # Dropping \Flagged alone would leave the colour bit behind, and Mail reads it back
+    # the next time the message is flagged by hand.
+    assert box.flag_calls == [("Archive", "3", ("\\Flagged", "$MailFlagBit2"), False)]
+
+
+def test_unflagging_red_clears_only_the_flag(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings.flag_colour = "red"
+    box = FakeBox(
+        {"INBOX": [FakeMessage(3, fixture_bytes("flight_jsonld.eml"))]}, [FakeFolder("INBOX")]
+    )
+    mailbox = connected(settings, box, monkeypatch)
+
+    mailbox.unflag(mailbox.flagged()[0])
+
+    # Red carries no colour bits, so there is nothing else to clear.
+    assert box.flag_calls == [("INBOX", "3", ("\\Flagged",), False)]
 
 
 def test_counting_what_is_waiting_downloads_nothing(

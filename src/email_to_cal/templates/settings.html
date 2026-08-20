@@ -3,7 +3,7 @@
 
 {% set mail_done = values.apple_id and values.apple_password %}
 {% set ai_done = values.provider == 'ollama' or values.anthropic_api_key %}
-{% set cal_done = values.calendar_name %}
+{% set cal_done = values.default_calendar %}
 
 <h1>Settings</h1>
 <p class="page-sub">Connect your accounts and pick the calendar to write to.</p>
@@ -59,6 +59,21 @@
           <a href="https://appleid.apple.com" target="_blank" rel="noopener">appleid.apple.com</a>
           &rarr; Sign-In and Security &rarr; App-Specific Passwords. If you ever change
           your Apple ID password, you'll need to make a new one.</p>
+      </div>
+    </div>
+    <div class="grid">
+      <div>
+        <label for="flag_colour">Flag colour</label>
+        <select id="flag_colour" name="flag_colour">
+          {% for colour in ['red', 'orange', 'yellow', 'green', 'blue', 'purple', 'grey'] %}
+          <option value="{{ colour }}"
+                  {% if values.flag_colour == colour %}selected{% endif %}>
+            {{ colour | capitalize }}</option>
+          {% endfor %}
+        </select>
+        <p class="hint">Flag an email this colour and it becomes an event; the flag comes
+          off when it's done. Every other colour is ignored, so they keep whatever
+          meaning you already give them.</p>
       </div>
     </div>
     <p class="hint">Every folder is searched, so it doesn't matter where the email is
@@ -168,12 +183,13 @@
     </div>
     <div class="grid">
       <div>
-        <label for="calendar_name">Calendar name</label>
-        <input type="text" id="calendar_name" name="calendar_name"
-               value="{{ values.calendar_name }}" placeholder="Bookings">
-        <p class="hint">Exactly as it is named in the Calendar app. It has to exist
-          already &mdash; create it there first. <strong>Check connections</strong> on
-          the Status page lists every calendar it can see if the name doesn't match.</p>
+        <label for="default_calendar">Main calendar</label>
+        <input type="text" id="default_calendar" name="default_calendar"
+               value="{{ values.default_calendar }}" placeholder="Bookings">
+        <p class="hint">Where events go when they match no category below. Name it
+          exactly as it appears in the Calendar app &mdash; every calendar here has to
+          exist already. <strong>Check connections</strong> on the Status page lists
+          every calendar it can see if a name doesn't match.</p>
       </div>
       <div>
         <label for="default_timezone">Time zone</label>
@@ -186,6 +202,28 @@
         <p class="hint">Start typing a city. Used when an email doesn't say where the
           event happens.</p>
       </div>
+    </div>
+    <div style="margin-top: 1.1rem;">
+      <label>Categories</label>
+      <p class="hint" style="margin: 0 0 .6rem;">Route kinds of events to their own
+        calendars. The description tells the model what belongs: say what counts and
+        what does not.</p>
+      <div id="categories">
+        {% for category in values.categories %}
+        <div class="category-row">
+          <input type="text" name="category_name" value="{{ category.name }}"
+                 placeholder="Name" aria-label="Category name">
+          <input type="text" name="category_description" value="{{ category.description }}"
+                 placeholder="What belongs here, e.g. concerts and gigs I have tickets for"
+                 aria-label="Category description">
+          <input type="text" name="category_calendar" value="{{ category.calendar }}"
+                 placeholder="Calendar" aria-label="Calendar name">
+          <button type="button" class="btn-ghost btn-sm"
+                  onclick="this.parentElement.remove()">Remove</button>
+        </div>
+        {% endfor %}
+      </div>
+      <button type="button" class="btn-secondary btn-sm" id="add-category">Add category</button>
     </div>
     <details>
       <summary>Advanced</summary>
@@ -252,7 +290,24 @@
   </div>
 </form>
 
+<template id="category-template">
+  <div class="category-row">
+    <input type="text" name="category_name" placeholder="Name" aria-label="Category name">
+    <input type="text" name="category_description"
+           placeholder="What belongs here, e.g. concerts and gigs I have tickets for"
+           aria-label="Category description">
+    <input type="text" name="category_calendar" placeholder="Calendar"
+           aria-label="Calendar name">
+    <button type="button" class="btn-ghost btn-sm"
+            onclick="this.parentElement.remove()">Remove</button>
+  </div>
+</template>
 <script>
+  document.getElementById('add-category').addEventListener('click', () => {
+    const template = document.getElementById('category-template');
+    document.getElementById('categories').append(template.content.cloneNode(true));
+  });
+
   const ZONES = {{ timezones | tojson }};
   const tzInput = document.getElementById('default_timezone');
   const tzList = document.getElementById('timezone-suggestions');

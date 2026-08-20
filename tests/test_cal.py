@@ -195,14 +195,28 @@ def test_discovery_walks_principal_then_home_then_calendars(settings: Settings) 
 
 
 def test_resolve_matches_the_name_case_insensitively(settings: Settings) -> None:
-    settings.calendar_name = "bookings"
-    url = caldav_client(settings, []).resolve(settings.calendar_name)
-    assert url == "https://p01-caldav.icloud.com/1234/calendars/home/"
+    resolved = caldav_client(settings, []).resolve(["bookings"])
+    assert resolved == {"bookings": "https://p01-caldav.icloud.com/1234/calendars/home/"}
+
+
+def test_every_calendar_resolves_from_one_discovery_pass(settings: Settings) -> None:
+    requests: list[httpx.Request] = []
+    caldav_client(settings, requests).resolve(["Bookings", "bookings"])
+
+    # Walking discovery once per configured calendar would triple the requests for no
+    # new information.
+    assert len(requests) == 3
 
 
 def test_a_missing_calendar_names_the_ones_that_exist(settings: Settings) -> None:
     with pytest.raises(CalendarUnavailable, match="this account has: Bookings"):
-        caldav_client(settings, []).resolve("Holidays")
+        caldav_client(settings, []).resolve(["Holidays"])
+
+
+def test_one_bad_name_fails_the_whole_resolve(settings: Settings) -> None:
+    # Failing at startup beats failing on the first email that routes to that calendar.
+    with pytest.raises(CalendarUnavailable, match="'Holidays'"):
+        caldav_client(settings, []).resolve(["Bookings", "Holidays"])
 
 
 def test_writing_an_event_puts_it_under_its_own_uid(settings: Settings) -> None:

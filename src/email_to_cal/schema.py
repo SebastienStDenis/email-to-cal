@@ -117,6 +117,9 @@ class ExtractedEvent(BaseModel):
         default=None, description="Arrival airport IATA code, for flights only."
     )
     booking_reference: str | None = None
+    category: str | None = Field(
+        default=None, description="Exactly one of the configured category names, or null."
+    )
 
 
 class ExtractionResult(BaseModel):

@@ -73,7 +73,9 @@ def _cmd_serve(_settings: Settings, args: argparse.Namespace) -> int:
 def _cmd_check(settings: Settings, _args: argparse.Namespace) -> int:
     """Validate every external dependency, then exit. Safe to run against production."""
     print(f"provider: {settings.provider}")
-    print(f"calendar: {settings.calendar_name}")
+    print(f"default calendar: {settings.default_calendar}")
+    for rule in settings.categories:
+        print(f"  {rule.name} -> {rule.calendar}")
     print(f"default timezone: {settings.default_timezone}")
 
     ok = True
@@ -97,15 +99,16 @@ def _cmd_replay(settings: Settings, args: argparse.Namespace) -> int:
         return 1
 
     calendar = CalendarClient(settings) if args.write else None
-    calendar_url = calendar.resolve(settings.calendar_name) if calendar else None
+    calendar_urls = calendar.resolve(settings.calendars) if calendar else {}
 
     for event in events:
-        built = build_ical(event, settings, message_id=doc.message_id)
-        print(f"# {built.describe()}")
+        name = settings.calendar_for(event.category)
+        built = build_ical(event, settings, message_id=doc.message_id, calendar=name)
+        print(f"# {built.describe()} -> {name}")
         print(built.ics.decode())
-        if calendar is not None and calendar_url is not None:
-            calendar.put(calendar_url, built.uid, built.ics)
-            print(f"# written to {settings.calendar_name}")
+        if calendar is not None:
+            calendar.put(calendar_urls[name], built.uid, built.ics)
+            print(f"# written to {name}")
     return 0
 
 
