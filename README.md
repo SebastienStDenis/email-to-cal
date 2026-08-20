@@ -218,12 +218,16 @@ uv run email-to-cal replay samples/weird.eml --dry-run
 
 ## Tuning the gate
 
-Two settings control how eager the service is:
+Three settings control how eager the service is:
 
 - **Minimum confidence** (default `0.75`) - events below this are logged with the reason
   and dropped. Raise it if you get junk, lower it if real bookings are being missed.
 - **Effort** (default `medium`) - how hard the model thinks. `high` catches more awkward
   emails at higher cost.
+- **Never add** (default: nothing) - kinds of event that are dropped whatever category
+  they match: flight, train, hotel, concert, restaurant, appointment, other. Ticking
+  *flight* keeps flights off every calendar while trains and hotels still land on the
+  travel one.
 
 Model responses are cached in the state database keyed by content, so replays and
 restarts never re-bill you for the same email.

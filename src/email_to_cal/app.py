@@ -98,6 +98,10 @@ class Pipeline:
             return outcome
 
         for event in result.events:
+            if event.kind in settings.excluded_kinds:
+                log.info("skipping excluded %s event %r", event.kind, event.title)
+                outcome.skipped.append((event.title, f"{event.kind} events are excluded"))
+                continue
             if event.confidence < settings.min_confidence:
                 log.info(
                     "skipping low-confidence event %r (%.2f < %.2f): %s",

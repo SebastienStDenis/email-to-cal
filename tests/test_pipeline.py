@@ -168,6 +168,44 @@ def test_low_confidence_events_are_skipped_not_written(settings: Settings) -> No
     store.close()
 
 
+def test_excluded_kinds_are_dropped_while_the_rest_of_the_email_survives(
+    settings: Settings,
+) -> None:
+    settings.excluded_kinds = ["flight"]
+    flight = ExtractedEvent(
+        kind="flight",
+        title="LX318 ZRH to LHR",
+        all_day=False,
+        start_local="2026-11-02T07:15:00",
+        departure_iata="ZRH",
+        arrival_iata="LHR",
+        category="travel",
+        confidence=0.98,
+        reasoning="Airline booking confirmation.",
+    )
+    hotel = ExtractedEvent(
+        kind="hotel",
+        title="The Hoxton Shoreditch",
+        location=EventLocation(name="The Hoxton", locality="London", country="GB"),
+        all_day=False,
+        start_local="2026-11-02T15:00:00",
+        end_local="2026-11-04T11:00:00",
+        category="travel",
+        confidence=0.95,
+        reasoning="Hotel reservation confirmed.",
+    )
+    result = ExtractionResult(
+        is_committed=True, gate_reasoning="Trip confirmation.", events=[flight, hotel]
+    )
+    pipeline, _, calendar, store = build(settings, result)
+
+    outcome = pipeline.process(fixture_bytes("flight_jsonld.eml"))
+
+    assert [body["summary"] for _, body in calendar.inserted] == ["The Hoxton Shoreditch"]
+    assert outcome.skipped == [("LX318 ZRH to LHR", "flight events are excluded")]
+    store.close()
+
+
 def test_unknown_category_falls_back_to_the_default_calendar(settings: Settings) -> None:
     result = ExtractionResult(
         is_committed=True,

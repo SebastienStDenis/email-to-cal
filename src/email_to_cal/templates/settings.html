@@ -137,6 +137,21 @@
         <p class="hint">0 to 1. Less certain events are skipped. Raise it if junk shows
           up; lower it if real bookings are missed.</p>
       </div>
+      <div class="wide">
+        <label>Never add</label>
+        <div class="kinds">
+          {% for kind in event_kinds %}
+          <div class="switch">
+            <input type="checkbox" id="exclude_{{ kind }}" name="excluded_kind"
+                   value="{{ kind }}"
+                   {% if kind in values.excluded_kinds %}checked{% endif %}>
+            <label for="exclude_{{ kind }}">{{ kind }}</label>
+          </div>
+          {% endfor %}
+        </div>
+        <p class="hint">Events of these kinds are dropped whatever category they fall in.
+          Ticking <strong>flight</strong> still leaves trains and hotels.</p>
+      </div>
       <div class="switch wide">
         <input type="checkbox" id="local_filter_enabled" name="local_filter_enabled"
                {% if values.local_filter_enabled %}checked{% endif %}>
