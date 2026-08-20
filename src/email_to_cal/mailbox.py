@@ -1,9 +1,11 @@
-"""iCloud IMAP: one connection, IDLE for new mail, a durable UID cursor.
+r"""iCloud IMAP: find the mail the human flagged, and clear the flag once it is done.
 
-iCloud has three habits that shape this module:
-  - it does not advertise IDLE in the pre-auth CAPABILITY greeting, only after LOGIN
-  - it allows only a handful of concurrent connections, shared with the owner's phone
-  - it has been seen emitting malformed ENVELOPEs, so we fetch and parse raw MIME
+The gate is a red flag in Mail. Apple encodes flag colours as `\Flagged` plus a
+`$MailFlagBitN` keyword per colour, and red - the default flag - is the one with no
+colour bits at all, so it is the one colour that can be recognised anywhere.
+
+Every selectable folder is searched on every pass, because a flag is set wherever the
+mail happens to be filed and mail moves between folders on its own.
 """
 
 from __future__ import annotations
@@ -11,64 +13,58 @@ from __future__ import annotations
 import logging
 import random
 import threading
-import time
-from collections.abc import Iterator
-from datetime import UTC, datetime, timedelta
+from dataclasses import dataclass
 
-from imap_tools import AND, MailBox
+from imap_tools import MailBox, MailMessageFlags
 from imap_tools.errors import MailboxLoginError
 
 from .config import Settings
-from .store import Store
 
 log = logging.getLogger(__name__)
 
-# How many times one message may fail before it is written off and skipped.
-MAX_ATTEMPTS = 3
-# IDLE is re-issued in slices this long so shutdown is not stuck behind a full cycle.
-IDLE_SLICE_SECONDS = 10.0
+# `\Flagged` with none of the colour bits set: Apple's red flag, and nothing else.
+RED_FLAG_CRITERIA = (
+    "FLAGGED UNKEYWORD $MailFlagBit0 UNKEYWORD $MailFlagBit1 UNKEYWORD $MailFlagBit2"
+)
+# Folders whose contents are not mail the user is asking about.
+SKIP_FOLDER_FLAGS = {"\\Noselect", "\\Junk", "\\Trash", "\\Drafts"}
 
 
 class AuthenticationFatal(RuntimeError):
     """Credentials were rejected. Retrying will not help and will hammer Apple."""
 
 
-def _discard(box: MailBox) -> None:
-    """Release a connection without letting teardown raise."""
-    try:
-        box.logout()
-    except Exception:
-        log.debug("IMAP logout failed", exc_info=True)
+@dataclass
+class FlaggedMail:
+    """One red-flagged message, and where it was found."""
+
+    folder: str
+    uid: int
+    raw: bytes
 
 
 class Mailbox:
-    """A single supervised IMAP connection with a persistent UID cursor."""
+    """A supervised IMAP connection that reads flags and clears them."""
 
-    def __init__(self, settings: Settings, store: Store) -> None:
+    def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        self._store = store
         self._box: MailBox | None = None
-        self._ack: tuple[int, str | None] | None = None
+        self._selected: str | None = None
 
-    # -- connection -----------------------------------------------------------------
-
-    def connect(self) -> MailBox:
+    def connect(self) -> None:
         settings = self._settings
-        # Read timeout must outlast an IDLE cycle so a dead socket raises instead of hanging.
-        timeout = settings.imap_idle_seconds + 60
-
-        candidates = [settings.imap_username]
-        if "@" in settings.imap_username:
+        candidates = [settings.apple_id]
+        if "@" in settings.apple_id:
             # Apple documents the local part as the username and the full address as a
             # fallback; in the wild either can be the one that works.
-            candidates.append(settings.imap_username.split("@", 1)[0])
+            candidates.append(settings.apple_id.split("@", 1)[0])
 
         last_error: Exception | None = None
         for username in candidates:
             # A fresh MailBox per attempt: a rejected login leaves the old one unusable.
-            box = MailBox(settings.imap_host, port=settings.imap_port, timeout=timeout)
+            box = MailBox(settings.imap_host, port=settings.imap_port, timeout=120)
             try:
-                box.login(username, settings.imap_password, initial_folder=settings.imap_folder)
+                box.login(username, settings.apple_password)
             except MailboxLoginError as exc:
                 last_error = exc
                 log.warning("IMAP login rejected for username %r", username)
@@ -76,7 +72,9 @@ class Mailbox:
                 continue
             log.info("connected to %s as %r", settings.imap_host, username)
             self._box = box
-            return box
+            # Login selects nothing, so the first search must select its folder itself.
+            self._selected = None
+            return
 
         raise AuthenticationFatal(
             "iCloud rejected the credentials. Note that changing the Apple ID password "
@@ -90,151 +88,67 @@ class Mailbox:
             # the few slots iCloud allows until the server times them out.
             _discard(self._box)
             self._box = None
+            self._selected = None
 
-    # -- cursor ---------------------------------------------------------------------
+    @property
+    def _connection(self) -> MailBox:
+        if self._box is None:
+            raise RuntimeError("mailbox is not connected")
+        return self._box
 
-    def _uidvalidity(self, box: MailBox, folder: str) -> int:
-        return int(box.folder.status(folder, ["UIDVALIDITY"])["UIDVALIDITY"])
+    def folders(self) -> list[str]:
+        """Every folder worth searching, junk and deleted mail excluded."""
+        return [
+            folder.name
+            for folder in self._connection.folder.list()
+            if not SKIP_FOLDER_FLAGS.intersection(folder.flags)
+        ]
 
-    def _sync_cursor(self, box: MailBox, folder: str, uidvalidity: int, *, backfill: bool) -> int:
-        """Return the UID to start fetching from, resyncing if UIDVALIDITY moved."""
-        stored = self._store.get_cursor(folder)
+    def _select(self, folder: str) -> None:
+        if self._selected != folder:
+            self._connection.folder.set(folder)
+            self._selected = folder
 
-        if stored is None:
-            start = self._initial_uid(box, backfill=backfill)
-            log.info("no cursor for %s; starting at UID %d", folder, start)
-            self._store.set_cursor(folder, uidvalidity, max(start - 1, 0))
-            return start
+    def flagged(self) -> list[FlaggedMail]:
+        """Every red-flagged message in the account, read in one pass.
 
-        stored_validity, last_uid = stored
-        if stored_validity != uidvalidity:
-            # RFC 4549: every cached UID is meaningless now. The Message-ID set keeps the
-            # resulting re-read idempotent.
-            log.warning(
-                "UIDVALIDITY changed for %s (%d -> %d); resyncing",
-                folder,
-                stored_validity,
-                uidvalidity,
-            )
-            start = self._initial_uid(box, backfill=backfill)
-            self._store.set_cursor(folder, uidvalidity, max(start - 1, 0))
-            return start
-
-        return last_uid + 1
-
-    def _initial_uid(self, box: MailBox, *, backfill: bool) -> int:
-        """Where a fresh cursor begins.
-
-        Swept folders never backfill: they hold mail that already passed through the
-        watched folder, so replaying them would re-read years of archive through the model
-        to find the handful of messages the watcher genuinely missed.
+        Read eagerly rather than streamed: processing one email takes model calls and
+        network writes, and holding a half-consumed IMAP fetch open across all of that
+        is what makes iCloud drop the connection.
         """
-        all_uids = [int(u) for u in box.uids()]
-        next_uid = max(all_uids) + 1 if all_uids else 1
-
-        days = self._settings.first_run_lookback_days
-        if not backfill or days <= 0:
-            return next_uid
-
-        since = (datetime.now(UTC) - timedelta(days=days)).date()
-        recent = [int(u) for u in box.uids(AND(date_gte=since))]
-        # Nothing inside the window means nothing to backfill. Falling back to UID 1 here
-        # would silently replay the entire mailbox through the model.
-        return min(recent) if recent else next_uid
-
-    # -- fetching -------------------------------------------------------------------
-
-    def ack(self, uid: int, *, error: str | None = None) -> None:
-        """Report the outcome of the message just yielded.
-
-        Without this the cursor would advance on a message the consumer failed to handle,
-        which loses it silently: nothing retries it and nothing records that it existed.
-        """
-        self._ack = (uid, error)
-
-    def select(self, box: MailBox, folder: str) -> None:
-        box.folder.set(folder)
-
-    def sweep(self, box: MailBox, folder: str) -> Iterator[tuple[int, bytes]]:
-        """Catch up on a folder that is not being watched, then restore the watched one.
-
-        Mail archived from a phone before IDLE saw it is otherwise invisible: a move
-        deletes it from the watched folder and gives it a fresh UID somewhere else.
-        Message-ID dedup means anything already handled is skipped for free.
-        """
-        primary = self._settings.imap_folder
-        try:
-            self.select(box, folder)
-            yield from self.fetch_new(box, folder=folder, backfill=False)
-        finally:
-            # IDLE only applies to the selected folder, so the watched one must come back
-            # even if the sweep raised partway through.
-            self.select(box, primary)
-
-    def fetch_new(
-        self, box: MailBox, folder: str | None = None, *, backfill: bool = True
-    ) -> Iterator[tuple[int, bytes]]:
-        """Yield (uid, raw_rfc822) for everything past the cursor in the selected folder.
-
-        The cursor advances only for messages the consumer acknowledges. A failure holds
-        the cursor so the next pass retries, and after MAX_ATTEMPTS the message is written
-        off to failed_messages and skipped so one poison email cannot stall the mailbox.
-        """
-        folder = folder or self._settings.imap_folder
-        uidvalidity = self._uidvalidity(box, folder)
-        start = self._sync_cursor(box, folder, uidvalidity, backfill=backfill)
-
-        # `n:*` always returns at least the highest UID, so filter against the cursor.
-        for message in box.fetch(f"UID {start}:*", mark_seen=False, bulk=False):
-            uid = int(message.uid) if message.uid else 0
-            if uid < start:
-                continue
-
-            self._ack = None
-            yield uid, message.obj.as_bytes()
-
-            if self._ack is None or self._ack[0] != uid:
-                # The consumer never reported back — treat it as a failure, not a success.
-                log.error("UID %d was not acknowledged; holding the cursor", uid)
-                return
-
-            _, error = self._ack
-            if error is None:
-                self._store.clear_failure(folder, uidvalidity, uid)
-                self._store.set_cursor(folder, uidvalidity, uid)
-                continue
-
-            attempts = self._store.record_failure(folder, uidvalidity, uid, error)
-            if attempts < MAX_ATTEMPTS:
-                log.warning(
-                    "UID %d failed (attempt %d/%d); retrying next cycle: %s",
-                    uid,
-                    attempts,
-                    MAX_ATTEMPTS,
-                    error,
+        found: list[FlaggedMail] = []
+        for folder in self.folders():
+            self._select(folder)
+            for message in self._connection.fetch(RED_FLAG_CRITERIA, mark_seen=False, bulk=False):
+                found.append(
+                    FlaggedMail(
+                        folder=folder, uid=int(message.uid or 0), raw=message.obj.as_bytes()
+                    )
                 )
-                return
+        if found:
+            log.info("found %d flagged message(s)", len(found))
+        return found
 
-            log.critical(
-                "giving up on UID %d after %d attempts; skipping it: %s", uid, attempts, error
-            )
-            self._store.set_cursor(folder, uidvalidity, uid)
+    def count_flagged(self) -> int:
+        """How many messages are waiting, without downloading any of them."""
+        total = 0
+        for folder in self.folders():
+            self._select(folder)
+            total += len(self._connection.uids(RED_FLAG_CRITERIA))
+        return total
 
-    def idle(self, box: MailBox, stopping: threading.Event) -> bool:
-        """Wait for activity, in slices short enough that SIGTERM is honoured promptly.
+    def unflag(self, mail: FlaggedMail) -> None:
+        """Clear the red flag: the only signal the user gets that a message is done."""
+        self._select(mail.folder)
+        self._connection.flag(str(mail.uid), MailMessageFlags.FLAGGED, False)
 
-        A single long IDLE would not do: a Python signal handler that returns normally
-        makes the interrupted syscall resume with its remaining timeout (PEP 475), so a
-        five-minute wait would outlast Docker's ten-second stop grace and get SIGKILLed.
-        """
-        deadline = time.monotonic() + self._settings.imap_idle_seconds
-        while not stopping.is_set():
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return False
-            if box.idle.wait(timeout=min(IDLE_SLICE_SECONDS, remaining)):
-                return True
-        return False
+
+def _discard(box: MailBox) -> None:
+    """Release a connection without letting teardown raise."""
+    try:
+        box.logout()
+    except Exception:
+        log.debug("IMAP logout failed", exc_info=True)
 
 
 def backoff_delay(attempt: int) -> float:

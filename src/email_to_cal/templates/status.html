@@ -7,9 +7,8 @@
 <section class="card">
   <div class="card-head">
     <h2>
-      {% if running %}Watching your inbox
+      {% if running %}Watching for flags
         <span class="badge ok">active</span>
-        {% if dry_run %}<span class="badge warn">preview mode</span>{% endif %}
       {% elif missing %}Almost ready
         <span class="badge warn">setup needed</span>
       {% else %}Stopped
@@ -19,8 +18,9 @@
     {% if running %}
     <p class="card-sub">
       {% if beat_age is none %}Getting started&hellip;
-      {% else %}Last activity {{ beat_age | ago }}.{% endif %}
-      New bookings are picked up within moments of arriving.
+      {% else %}Last pass {{ beat_age | ago }}.{% endif %}
+      Flag an email in Mail with the red flag and it goes to
+      <strong>{{ calendar }}</strong>. The flag comes off once it's done.
     </p>
     {% elif missing %}
     <p class="card-sub">Still to fill in: {{ missing | join(', ') }}.
@@ -31,11 +31,6 @@
       <a href="{{ url_for('settings_page') }}">Settings</a>, then restart.</p>
     {% endif %}
   </div>
-  {% if running and dry_run %}
-  <p class="hint" style="margin: 0 0 1rem;">Preview mode is on: nothing is written to
-    your calendar yet. When the results below look right, switch it off in
-    <a href="{{ url_for('settings_page') }}">Settings</a>.</p>
-  {% endif %}
   <div class="actions" style="margin-top: 0;">
     <form method="post" action="{{ url_for('check') }}">
       <button class="btn-secondary btn-sm">Check connections</button>
@@ -52,8 +47,8 @@
   </div>
   {% if events %}
   <table>
-    <tr><th>Event</th><th style="text-align: right;">When</th></tr>
-    {% for summary, calendar_id, age in events %}
+    <tr><th>Event</th><th style="text-align: right;">Added</th></tr>
+    {% for summary, starts_at, age in events %}
     <tr>
       <td>{{ summary or '(untitled)' }}</td>
       <td class="muted" style="text-align: right; white-space: nowrap;">{{ age | ago }}</td>
@@ -61,28 +56,38 @@
     {% endfor %}
   </table>
   {% else %}
-  <p class="empty">Nothing yet. New bookings will show up here.
-    {% if dry_run %}<br>Preview mode only records would-be events in the log.{% endif %}</p>
+  <p class="empty">Nothing yet. Flag an email in Mail and it will show up here.</p>
   {% endif %}
 </section>
 
 {% if failures %}
 <section class="card">
   <div class="card-head">
-    <h2>Couldn't be read <span class="badge">{{ failures | length }}</span></h2>
-    <p class="card-sub">These emails failed a few times, so they were set aside and
-      everything else carried on.</p>
+    <h2>Still flagged <span class="badge">{{ failures | length }}</span></h2>
+    <p class="card-sub">These couldn't be turned into events, so their flags were left
+      on. Fix whatever they need, or unflag them in Mail to drop them.</p>
   </div>
   <table>
-    <tr><th>Where</th><th>Tries</th><th>What happened</th></tr>
-    {% for folder, uidvalidity, uid, attempts, error in failures %}
+    <tr><th>Email</th><th>Tries</th><th>What happened</th><th></th></tr>
+    {% for failure in failures %}
     <tr>
-      <td style="white-space: nowrap;">{{ folder }} #{{ uid }}</td>
-      <td>{{ attempts }}</td>
-      <td class="muted">{{ error[:140] }}</td>
+      <td>{{ failure.subject or '(no subject)' }}</td>
+      <td>{{ failure.attempts }}{% if not failure.given_up %} <span class="muted">(waiting)</span>{% endif %}</td>
+      <td class="muted">{{ failure.detail[:140] }}</td>
+      <td style="text-align: right;">
+        <form method="post" action="{{ url_for('retry') }}">
+          <input type="hidden" name="message_id" value="{{ failure.message_id }}">
+          <button class="btn-ghost btn-sm">Try again</button>
+        </form>
+      </td>
     </tr>
     {% endfor %}
   </table>
+  <div class="actions">
+    <form method="post" action="{{ url_for('retry') }}">
+      <button class="btn-secondary btn-sm">Try all again</button>
+    </form>
+  </div>
 </section>
 {% endif %}
 

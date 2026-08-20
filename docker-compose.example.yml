@@ -8,12 +8,12 @@ services:
       # reach it with: ssh -L 8080:localhost:8080 your-server
       - "127.0.0.1:8080:8080"
     volumes:
-      # Holds config.json, token.json, and state.sqlite. Back this up.
+      # Holds config.json and state.sqlite. Back this up.
       - data:/app/data
 
-  # Only needed for the optional local junk filter. Pull the model once with:
+  # Only needed when you pick the local model instead of Claude. Pull the model once:
   #   docker exec ollama ollama pull gpt-oss:20b
-  # and set the Ollama server to http://ollama:11434 in the portal's Advanced settings.
+  # and set the Ollama server to http://ollama:11434 in the portal.
   ollama:
     image: ollama/ollama:latest
     container_name: ollama

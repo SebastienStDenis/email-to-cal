@@ -1,9 +1,13 @@
-"""Phone notifications via Pushover: created events and failures that need a person."""
+"""Phone notifications via Pushover: every flagged email is answered, either way.
+
+The flag coming off the message is the quiet signal that it worked. This is the loud
+one, and it is the only report a failure gets - so both outcomes carry a link that opens
+the original email in Mail.
+"""
 
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 import httpx
 
@@ -30,36 +34,48 @@ class Notifier:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
 
-    def created(self, title: str, calendar: str, *, url: str | None = None) -> None:
+    def created(self, events: list[str], calendar: str, link: str | None) -> None:
         # Quiet priority: informational, so no chime when a 3am email books something.
-        if self._settings.pushover_notify_events:
-            self._send("Event created", f"{title} on {calendar}", priority=-1, url=url)
+        title = "Event added" if len(events) == 1 else f"{len(events)} events added"
+        self._send(
+            f"{title} to {calendar}",
+            "\n".join(events),
+            priority=-1,
+            link=link,
+            link_title="Open in Calendar",
+        )
 
-    def failure(self, message: str) -> None:
-        if self._settings.pushover_notify_errors:
-            self._send("Processing failure", message, priority=0)
+    def failed(self, subject: str, detail: str, link: str | None) -> None:
+        self._send(
+            f"Couldn't process: {subject}"[:250],
+            detail,
+            priority=0,
+            link=link,
+            link_title="Open the email",
+        )
 
     def fatal(self, message: str) -> None:
         # High priority: the service has stopped and stays stopped until someone acts.
-        if self._settings.pushover_notify_errors:
-            self._send("Service stopped", message, priority=1)
+        self._send("Service stopped", message, priority=1, link=None, link_title="")
 
-    def _send(self, title: str, message: str, *, priority: int, url: str | None = None) -> None:
+    def _send(
+        self, title: str, message: str, *, priority: int, link: str | None, link_title: str
+    ) -> None:
         settings = self._settings
         if not settings.pushover_user or not settings.pushover_token:
             return
-        data: dict[str, Any] = {
+        payload = {
             "token": settings.pushover_token,
             "user": settings.pushover_user,
             "title": title,
             "message": message[:MAX_MESSAGE_LENGTH],
             "priority": priority,
         }
-        if url and len(url) <= MAX_URL_LENGTH:
-            data["url"] = url
-            data["url_title"] = "Open in Calendar"
+        if link and len(link) <= MAX_URL_LENGTH:
+            payload["url"] = link
+            payload["url_title"] = link_title
         try:
-            response = httpx.post(MESSAGES_URL, data=data, timeout=10)
+            response = httpx.post(MESSAGES_URL, data=payload, timeout=10)
             response.raise_for_status()
         except Exception:
             log.warning("pushover notification failed", exc_info=True)

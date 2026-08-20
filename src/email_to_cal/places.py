@@ -1,7 +1,7 @@
 """Turn a place into the one line a calendar can actually resolve.
 
-Google Calendar's location is free-form text, and it only earns a map pin, travel time,
-and a directions link when that text geocodes to a real place. A bare venue name usually
+An event's location is free-form text, and it only earns a map pin, travel time, and a
+directions link when that text geocodes to a real place. A bare venue name usually
 does not: "LaGuardia Airport" is a label, "LaGuardia Airport, East Elmhurst, NY 11371,
 US" is an address. So the model fills in the address parts it can see, this renders them
 in the order geocoders expect, and airports - which name a place the sender never spells

@@ -1,11 +1,12 @@
 {% extends "base.html" %}
 {% block content %}
 
-{% set mail_done = values.imap_username and values.imap_password %}
-{% set ai_done = values.anthropic_api_key %}
+{% set mail_done = values.apple_id and values.apple_password %}
+{% set ai_done = values.provider == 'ollama' or values.anthropic_api_key %}
+{% set cal_done = values.calendar_name %}
 
 <h1>Settings</h1>
-<p class="page-sub">Connect your accounts and choose how events are sorted.</p>
+<p class="page-sub">Connect your accounts and pick the calendar to write to.</p>
 
 {% if errors %}
 <ul class="errors">{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul>
@@ -14,21 +15,21 @@
 {% if missing %}
 <section class="card">
   <h2>Set up in three steps</h2>
-  <p class="card-sub">Fill these in and your calendar starts filling itself.</p>
+  <p class="card-sub">Then flag an email in Mail and it lands on your calendar.</p>
   <div class="steps">
     <div class="step {{ 'done' if mail_done }}">
       <span class="tick">{{ '✓' if mail_done else '1' }}</span>
-      <span>Apple Mail</span>
+      <span>Apple ID</span>
       <span class="what">your iCloud address and an app password</span>
     </div>
     <div class="step {{ 'done' if ai_done }}">
       <span class="tick">{{ '✓' if ai_done else '2' }}</span>
-      <span>Claude</span>
-      <span class="what">the AI that reads your email</span>
+      <span>The model</span>
+      <span class="what">what reads your email</span>
     </div>
-    <div class="step {{ 'done' if google_connected }}">
-      <span class="tick">{{ '✓' if google_connected else '3' }}</span>
-      <span>Google Calendar</span>
+    <div class="step {{ 'done' if cal_done }}">
+      <span class="tick">{{ '✓' if cal_done else '3' }}</span>
+      <span>Calendar</span>
       <span class="what">where events end up</span>
     </div>
   </div>
@@ -38,50 +39,30 @@
 <form method="post" action="{{ url_for('settings_save') }}">
   <section class="card">
     <div class="card-head">
-      <h2>Apple Mail
+      <h2>Apple ID
         {% if mail_done %}<span class="badge ok">ready</span>{% endif %}
       </h2>
-      <p class="card-sub">The iCloud inbox to watch for bookings and invitations.</p>
+      <p class="card-sub">One app-specific password reaches both your mail and your
+        calendars.</p>
     </div>
     <div class="grid">
       <div>
-        <label for="imap_username">iCloud email</label>
-        <input type="text" id="imap_username" name="imap_username"
-               value="{{ values.imap_username }}" placeholder="you@icloud.com">
+        <label for="apple_id">iCloud email</label>
+        <input type="text" id="apple_id" name="apple_id"
+               value="{{ values.apple_id }}" placeholder="you@icloud.com">
       </div>
       <div>
-        <label for="imap_password">App password</label>
-        <input type="password" id="imap_password" name="imap_password"
-               value="{{ values.imap_password }}" placeholder="xxxx-xxxx-xxxx-xxxx">
+        <label for="apple_password">App password</label>
+        <input type="password" id="apple_password" name="apple_password"
+               value="{{ values.apple_password }}" placeholder="xxxx-xxxx-xxxx-xxxx">
         <p class="hint">A separate password just for this app. Create one at
           <a href="https://appleid.apple.com" target="_blank" rel="noopener">appleid.apple.com</a>
           &rarr; Sign-In and Security &rarr; App-Specific Passwords. If you ever change
           your Apple ID password, you'll need to make a new one.</p>
       </div>
-      <div>
-        <label for="imap_folder">Folder to watch</label>
-        <input type="text" id="imap_folder" name="imap_folder" value="{{ values.imap_folder }}">
-        <p class="hint">Where new mail arrives. Usually INBOX.</p>
-      </div>
-      <div>
-        <label for="sweep-add">Also check</label>
-        <div class="chips" id="sweep-chips">
-          {% for folder in values.sweep_folders %}
-          <span class="chip">{{ folder }}
-            <input type="hidden" name="sweep_folder" value="{{ folder }}">
-            <button type="button" aria-label="Remove {{ folder }}"
-                    onclick="this.parentElement.remove()">&times;</button>
-          </span>
-          {% endfor %}
-        </div>
-        <div class="chip-add">
-          <input type="text" id="sweep-add" placeholder="Archive">
-          <button type="button" class="btn-secondary btn-sm" id="sweep-add-btn">Add</button>
-        </div>
-        <p class="hint">Folders you file mail into. Catches anything you archive from
-          your phone before it's been read.</p>
-      </div>
     </div>
+    <p class="hint">Every folder is searched, so it doesn't matter where the email is
+      filed. Junk and Trash are left alone.</p>
     <details>
       <summary>Advanced</summary>
       <div class="grid">
@@ -94,20 +75,10 @@
           <input type="number" id="imap_port" name="imap_port" value="{{ values.imap_port }}">
         </div>
         <div>
-          <label for="imap_idle_seconds">Connection refresh (seconds)</label>
-          <input type="number" id="imap_idle_seconds" name="imap_idle_seconds"
-                 value="{{ values.imap_idle_seconds }}">
-        </div>
-        <div>
-          <label for="sweep_interval_minutes">Check other folders every (minutes)</label>
-          <input type="number" id="sweep_interval_minutes" name="sweep_interval_minutes"
-                 value="{{ values.sweep_interval_minutes }}">
-        </div>
-        <div>
-          <label for="first_run_lookback_days">On first run, look back (days)</label>
-          <input type="number" id="first_run_lookback_days" name="first_run_lookback_days"
-                 value="{{ values.first_run_lookback_days }}">
-          <p class="hint">0 means only mail that arrives from now on.</p>
+          <label for="poll_interval_seconds">Check for flags every (seconds)</label>
+          <input type="number" id="poll_interval_seconds" name="poll_interval_seconds"
+                 value="{{ values.poll_interval_seconds }}">
+          <p class="hint">How long a flagged email waits before it's picked up.</p>
         </div>
       </div>
     </details>
@@ -115,44 +86,50 @@
 
   <section class="card">
     <div class="card-head">
-      <h2>Claude
+      <h2>Reading email
         {% if ai_done %}<span class="badge ok">ready</span>{% endif %}
       </h2>
-      <p class="card-sub">The AI that decides what's a real booking and what's just an ad.</p>
+      <p class="card-sub">What turns a flagged email into an event.</p>
     </div>
     <div class="grid">
       <div>
-        <label for="anthropic_api_key">API key</label>
+        <label for="provider">Model</label>
+        <select id="provider" name="provider">
+          <option value="anthropic" {% if values.provider == 'anthropic' %}selected{% endif %}>
+            Claude (reads PDFs and photos)</option>
+          <option value="ollama" {% if values.provider == 'ollama' %}selected{% endif %}>
+            Local model (free, private, text only)</option>
+        </select>
+        <p class="hint">A local model costs nothing and never sends your mail anywhere,
+          but it can only read text: scanned tickets and boarding-pass images come back
+          empty, and you get a notification saying so.</p>
+      </div>
+      <div>
+        <label for="anthropic_api_key">Claude API key</label>
         <input type="password" id="anthropic_api_key" name="anthropic_api_key"
                value="{{ values.anthropic_api_key }}" placeholder="sk-ant-...">
         <p class="hint">From
           <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a>
-          &rarr; API keys. Each email is read once, so a personal mailbox costs very
-          little.</p>
+          &rarr; API keys. Only flagged email is ever read, so this costs very little.</p>
       </div>
       <div>
-        <label for="min_confidence">How sure it must be</label>
-        <input type="text" id="min_confidence" name="min_confidence"
-               value="{{ values.min_confidence }}">
-        <p class="hint">0 to 1. Less certain events are skipped. Raise it if junk shows
-          up; lower it if real bookings are missed.</p>
+        <label for="ollama_url">Ollama server</label>
+        <input type="text" id="ollama_url" name="ollama_url" value="{{ values.ollama_url }}">
+        <p class="hint">With Ollama in a sibling container, <code>http://ollama:11434</code>;
+          on the host from Docker, <code>http://host.docker.internal:11434</code>.</p>
       </div>
-      <div class="switch wide">
-        <input type="checkbox" id="local_filter_enabled" name="local_filter_enabled"
-               {% if values.local_filter_enabled %}checked{% endif %}>
-        <label for="local_filter_enabled">Filter junk with a free local model first
-          <span class="hint">A model running on this machine (via Ollama) discards
-            newsletters and ads before they cost an API call; anything that could be a
-            booking still goes to Claude. Needs an Ollama server with the model pulled
-            &mdash; verify with <strong>Run checks</strong>. If the local model is
-            unreachable, mail simply goes to Claude as before.</span></label>
+      <div>
+        <label for="ollama_model">Local model</label>
+        <input type="text" id="ollama_model" name="ollama_model"
+               value="{{ values.ollama_model }}">
+        <p class="hint">Pull it first: <code>ollama pull {{ values.ollama_model }}</code>.</p>
       </div>
     </div>
     <details>
       <summary>Advanced</summary>
       <div class="grid">
         <div>
-          <label for="anthropic_model">Model</label>
+          <label for="anthropic_model">Claude model</label>
           <input type="text" id="anthropic_model" name="anthropic_model"
                  value="{{ values.anthropic_model }}">
         </div>
@@ -167,34 +144,16 @@
           </select>
         </div>
         <div>
-          <label for="ollama_url">Ollama server (for the junk filter)</label>
-          <input type="text" id="ollama_url" name="ollama_url" value="{{ values.ollama_url }}">
-          <p class="hint">With Ollama in a sibling container, <code>http://ollama:11434</code>;
-            on the host from Docker, <code>http://host.docker.internal:11434</code>.</p>
-        </div>
-        <div>
-          <label for="ollama_model">Filter model</label>
-          <input type="text" id="ollama_model" name="ollama_model"
-                 value="{{ values.ollama_model }}">
-          <p class="hint">Pull it first: <code>ollama pull {{ values.ollama_model }}</code>.</p>
-        </div>
-        <div>
           <label for="max_attachment_mb">Largest attachment to read (MB)</label>
           <input type="text" id="max_attachment_mb" name="max_attachment_mb"
                  value="{{ values.max_attachment_mb }}">
-        </div>
-        <div>
-          <label for="dedup_window_minutes">Duplicate window (minutes)</label>
-          <input type="text" id="dedup_window_minutes" name="dedup_window_minutes"
-                 value="{{ values.dedup_window_minutes }}">
-          <p class="hint">A similar event starting this close on the same calendar is
-            not created again. 0 turns the check off.</p>
         </div>
         <div class="switch" style="align-self: end;">
           <input type="checkbox" id="enable_vision" name="enable_vision"
                  {% if values.enable_vision %}checked{% endif %}>
           <label for="enable_vision">Read PDFs and images
-            <span class="hint">How boarding passes and e-tickets get read.</span></label>
+            <span class="hint">How boarding passes and e-tickets get read. Claude
+              only.</span></label>
         </div>
       </div>
     </details>
@@ -202,81 +161,19 @@
 
   <section class="card">
     <div class="card-head">
-      <h2>Google Calendar
-        {% if google_connected %}<span class="badge ok">connected</span>
-        {% else %}<span class="badge">not connected</span>{% endif %}
+      <h2>Calendar
+        {% if cal_done %}<span class="badge ok">ready</span>{% endif %}
       </h2>
       <p class="card-sub">Where your events end up.</p>
     </div>
     <div class="grid">
       <div>
-        <label for="google_client_id">Client id</label>
-        <input type="text" id="google_client_id" name="google_client_id"
-               value="{{ values.google_client_id }}"
-               placeholder="xxxx.apps.googleusercontent.com">
-      </div>
-      <div>
-        <label for="google_client_secret">Client secret</label>
-        <input type="password" id="google_client_secret" name="google_client_secret"
-               value="{{ values.google_client_secret }}" placeholder="GOCSPX-...">
-      </div>
-    </div>
-    <details {% if not google_connected and not values.google_client_id %}open{% endif %}>
-      <summary>Where do I get these? (one-time, about five minutes)</summary>
-      <div class="hint">
-        <p style="margin: 0;">Google requires every app that touches your calendar to be
-          registered, even one running in your own home. You register it once and copy
-          two codes:</p>
-        <ol>
-          <li>At <a href="https://console.cloud.google.com" target="_blank"
-              rel="noopener">console.cloud.google.com</a>, create a project (any name).</li>
-          <li>Open <strong>APIs &amp; Services &rarr; Library</strong> and enable the
-            <strong>Google Calendar API</strong> and the <strong>CalDAV API</strong>.</li>
-          <li>Open <strong>APIs &amp; Services &rarr; OAuth consent screen</strong>: pick
-            <strong>External</strong> users, then set the publishing status to
-            <strong>In production</strong>. Skipping this makes Google cut the
-            connection every 7 days. You may see a "Google hasn't verified this app"
-            notice the first time you connect; that's expected for personal apps, so
-            choose Advanced &rarr; continue.</li>
-          <li>Open <strong>APIs &amp; Services &rarr; Credentials &rarr; Create
-            Credentials &rarr; OAuth client ID &rarr; Desktop app</strong>, then copy the
-            client id and secret into the fields above.</li>
-        </ol>
-        <p>Reaching this page over <strong>HTTPS</strong> on a server (for example
-          through <code>tailscale serve</code>)? In step 4 pick <strong>Web
-          application</strong> instead of Desktop app and add
-          <code>{{ request.url_root.rstrip('/') }}/google/callback</code> as an
-          authorised redirect URI; then connecting works right from here, no tunnel
-          needed.</p>
-      </div>
-    </details>
-    <p class="hint">Connecting saves your settings and opens Google's permission screen.
-      Open this page as <strong>localhost</strong> (through an SSH tunnel if it runs on
-      a server) or over HTTPS with a Web application client, so Google can send you
-      back here.</p>
-    <p class="hint">Google will warn that the app is unverified; that's normal for an
-      app only you use. Choose <strong>Advanced</strong> &rarr; <strong>Go to
-      email-to-cal (unsafe)</strong> to continue.</p>
-    <div class="actions">
-      <button type="submit" name="action" value="connect" class="btn-secondary btn-sm">
-        {% if google_connected %}Reconnect Google Calendar{% else %}Connect Google Calendar{% endif %}
-      </button>
-    </div>
-  </section>
-
-  <section class="card">
-    <div class="card-head">
-      <h2>Sorting</h2>
-      <p class="card-sub">Which calendar each kind of event goes to.</p>
-    </div>
-    <div class="grid">
-      <div>
-        <label for="default_calendar">Main calendar</label>
-        <input type="text" id="default_calendar" name="default_calendar"
-               value="{{ values.default_calendar }}">
-        <p class="hint">For events that match no category below. Created for you if it
-          doesn't exist; type <strong>primary</strong> to use your main Google calendar
-          instead.</p>
+        <label for="calendar_name">Calendar name</label>
+        <input type="text" id="calendar_name" name="calendar_name"
+               value="{{ values.calendar_name }}" placeholder="Bookings">
+        <p class="hint">Exactly as it is named in the Calendar app. It has to exist
+          already &mdash; create it there first. <strong>Check connections</strong> on
+          the Status page lists every calendar it can see if the name doesn't match.</p>
       </div>
       <div>
         <label for="default_timezone">Time zone</label>
@@ -290,36 +187,17 @@
           event happens.</p>
       </div>
     </div>
-    <div style="margin-top: 1.1rem;">
-      <label>Categories</label>
-      <p class="hint" style="margin: 0 0 .6rem;">Route events to their own calendars, or
-        keep them off the calendar entirely. The description tells the AI what the rule
-        covers: say what counts and what does not. An excluded event is dropped even when
-        it also matches a category, so <em>never add</em> for flights leaves the trains
-        and hotels of the same trip on your travel calendar.</p>
-      <div id="categories">
-        {% for category in values.categories %}
-        <div class="category-row">
-          <input type="text" name="category_name" value="{{ category.name }}"
-                 placeholder="Name" aria-label="Category name">
-          <input type="text" name="category_description" value="{{ category.description }}"
-                 placeholder="What this rule covers, e.g. gigs I have tickets for"
-                 aria-label="What the rule covers">
-          <select name="category_action" aria-label="What to do with matching events">
-            <option value="include"
-                    {% if category.action != 'exclude' %}selected{% endif %}>Add to</option>
-            <option value="exclude"
-                    {% if category.action == 'exclude' %}selected{% endif %}>Never add</option>
-          </select>
-          <input type="text" name="category_calendar" value="{{ category.calendar }}"
-                 placeholder="Calendar" aria-label="Calendar name">
-          <button type="button" class="btn-ghost btn-sm"
-                  onclick="this.parentElement.remove()">Remove</button>
+    <details>
+      <summary>Advanced</summary>
+      <div class="grid">
+        <div>
+          <label for="caldav_url">Calendar server</label>
+          <input type="text" id="caldav_url" name="caldav_url" value="{{ values.caldav_url }}">
+          <p class="hint">iCloud by default. Any CalDAV server that accepts the same
+            username and password works.</p>
         </div>
-        {% endfor %}
       </div>
-      <button type="button" class="btn-secondary btn-sm" id="add-category">Add category</button>
-    </div>
+    </details>
   </section>
 
   <section class="card">
@@ -327,8 +205,9 @@
       <h2>Phone notifications
         {% if values.pushover_user and values.pushover_token %}<span class="badge ok">on</span>{% endif %}
       </h2>
-      <p class="card-sub">Optional pushes to your phone through
-        <a href="https://pushover.net" target="_blank" rel="noopener">Pushover</a>.</p>
+      <p class="card-sub">Every flagged email gets an answer here, whether it worked or
+        not, through <a href="https://pushover.net" target="_blank" rel="noopener">Pushover</a>.
+        Without these keys, a failure is only visible on the Status page.</p>
     </div>
     <div class="grid">
       <div>
@@ -347,19 +226,6 @@
           <a href="https://pushover.net/apps/build" target="_blank"
              rel="noopener">pushover.net/apps/build</a> and copy its API token.</p>
       </div>
-      <div class="switch">
-        <input type="checkbox" id="pushover_notify_events" name="pushover_notify_events"
-               {% if values.pushover_notify_events %}checked{% endif %}>
-        <label for="pushover_notify_events">New calendar events
-          <span class="hint">Delivered quietly, without a sound.</span></label>
-      </div>
-      <div class="switch">
-        <input type="checkbox" id="pushover_notify_errors" name="pushover_notify_errors"
-               {% if values.pushover_notify_errors %}checked{% endif %}>
-        <label for="pushover_notify_errors">Errors
-          <span class="hint">Emails that fail to process, and anything that stops the
-            service, like an expired app password.</span></label>
-      </div>
     </div>
   </section>
 
@@ -368,14 +234,6 @@
       <h2>Preferences</h2>
     </div>
     <div class="grid">
-      <div class="switch wide">
-        <input type="checkbox" id="dry_run" name="dry_run"
-               {% if values.dry_run %}checked{% endif %}>
-        <label for="dry_run">Preview mode
-          <span class="hint">Nothing is added to your calendar; the service only records
-            what it would have added. Leave on for the first day, look at the Status
-            page, then switch off.</span></label>
-      </div>
       <div>
         <label for="log_level">Log detail</label>
         <select id="log_level" name="log_level">
@@ -394,69 +252,7 @@
   </div>
 </form>
 
-<template id="category-template">
-  <div class="category-row">
-    <input type="text" name="category_name" placeholder="Name" aria-label="Category name">
-    <input type="text" name="category_description"
-           placeholder="What this rule covers, e.g. gigs I have tickets for"
-           aria-label="What the rule covers">
-    <select name="category_action" aria-label="What to do with matching events">
-      <option value="include">Add to</option>
-      <option value="exclude">Never add</option>
-    </select>
-    <input type="text" name="category_calendar" placeholder="Calendar"
-           aria-label="Calendar name">
-    <button type="button" class="btn-ghost btn-sm"
-            onclick="this.parentElement.remove()">Remove</button>
-  </div>
-</template>
 <script>
-  const categories = document.getElementById('categories');
-
-  function syncRow(row) {
-    const calendar = row.querySelector('[name=category_calendar]');
-    const excluded = row.querySelector('[name=category_action]').value === 'exclude';
-    calendar.readOnly = excluded;
-    calendar.placeholder = excluded ? 'no calendar' : 'Calendar';
-    if (excluded) calendar.value = '';
-  }
-
-  categories.addEventListener('change', (event) => {
-    if (event.target.name === 'category_action') syncRow(event.target.closest('.category-row'));
-  });
-  categories.querySelectorAll('.category-row').forEach(syncRow);
-
-  document.getElementById('add-category').addEventListener('click', () => {
-    const template = document.getElementById('category-template');
-    categories.append(template.content.cloneNode(true));
-  });
-
-  const sweepInput = document.getElementById('sweep-add');
-  function addSweepFolder() {
-    const name = sweepInput.value.trim();
-    if (!name) return;
-    const chip = document.createElement('span');
-    chip.className = 'chip';
-    chip.append(name);
-    const hidden = document.createElement('input');
-    hidden.type = 'hidden';
-    hidden.name = 'sweep_folder';
-    hidden.value = name;
-    const remove = document.createElement('button');
-    remove.type = 'button';
-    remove.textContent = '×';
-    remove.setAttribute('aria-label', 'Remove ' + name);
-    remove.addEventListener('click', () => chip.remove());
-    chip.append(hidden, remove);
-    document.getElementById('sweep-chips').append(chip);
-    sweepInput.value = '';
-    sweepInput.focus();
-  }
-  document.getElementById('sweep-add-btn').addEventListener('click', addSweepFolder);
-  sweepInput.addEventListener('keydown', event => {
-    if (event.key === 'Enter') { event.preventDefault(); addSweepFolder(); }
-  });
-
   const ZONES = {{ timezones | tojson }};
   const tzInput = document.getElementById('default_timezone');
   const tzList = document.getElementById('timezone-suggestions');

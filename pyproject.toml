@@ -1,7 +1,7 @@
 [project]
 name = "email-to-cal"
 version = "0.1.0"
-description = "Watch an iCloud mailbox and turn committed personal events into Google Calendar entries."
+description = "Turn the emails you flag in iCloud Mail into calendar events."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -9,8 +9,6 @@ dependencies = [
     "anthropic>=0.120.0",
     "beautifulsoup4>=4.13",
     "flask>=3.0",
-    "google-api-python-client>=2.190",
-    "google-auth-oauthlib>=1.2",
     "html2text>=2025.4.15",
     "httpx>=0.28",
     "icalendar>=6.3",
@@ -49,13 +47,13 @@ python_version = "3.12"
 strict = true
 files = ["src"]
 
-# The Google client libraries ship no type information, so calls into them are untyped.
+# icalendar and parts of Flask ship no type information, so calls into them are untyped.
 [[tool.mypy.overrides]]
-module = ["email_to_cal.gcal", "email_to_cal.web"]
+module = ["email_to_cal.cal", "email_to_cal.web"]
 disallow_untyped_calls = false
 
 [[tool.mypy.overrides]]
-module = ["imap_tools.*", "googleapiclient.*", "google_auth_oauthlib.*", "airportsdata.*", "html2text.*", "icalendar.*"]
+module = ["imap_tools.*", "airportsdata.*", "html2text.*", "icalendar.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
