@@ -124,14 +124,33 @@ def _render_email(
     return "\n".join(lines)
 
 
-def _categories_block(settings: Settings) -> str:
-    if not settings.categories:
-        return "\n\nNo categories are configured. Always set category to null."
-    rendered = "\n".join(f"- {r.name}: {r.description}" for r in settings.categories)
-    return (
-        "\n\n# Categories\n\nAssign each event to exactly one of these category names, or "
-        "null if none genuinely fit. Do not invent names.\n\n" + rendered
-    )
+def _rules_block(settings: Settings) -> str:
+    """The operator's own categories and exclusions, in their own words."""
+    includes = [rule for rule in settings.categories if rule.action == "include"]
+    exclusions = settings.exclusions
+
+    if includes:
+        rendered = "\n".join(f"- {r.name}: {r.description}" for r in includes)
+        block = (
+            "\n\n# Categories\n\nAssign each event to exactly one of these category names, or "
+            "null if none genuinely fit. Do not invent names.\n\n" + rendered
+        )
+    else:
+        block = "\n\nNo categories are configured. Always set category to null."
+
+    if exclusions:
+        rendered = "\n".join(f"- {r.name}: {r.description}" for r in exclusions)
+        block += (
+            "\n\n# Exclusions\n\nThe recipient never wants these on their calendar. Set "
+            "excluded_by to the name of the rule below that describes the event, or null "
+            "when none do. Judge this separately from the category: an event that matches "
+            "an exclusion is excluded even when it also fits a category. Extract the event "
+            "in full either way, so the skip can be explained.\n\n" + rendered
+        )
+    else:
+        block += "\n\nNo exclusions are configured. Always set excluded_by to null."
+
+    return block
 
 
 def _content_blocks(doc: EmailDocument, settings: Settings) -> list[Any]:
@@ -191,7 +210,9 @@ def cache_key(doc: EmailDocument, settings: Settings) -> str:
             "prompt": hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest(),
             "model": settings.anthropic_model,
             "effort": settings.anthropic_effort,
-            "categories": [r.model_dump() for r in settings.categories],
+            # exclude_defaults keeps a rule that uses none of the newer fields hashing
+            # exactly as it did before they existed, so adding one orphans nothing.
+            "categories": [r.model_dump(exclude_defaults=True) for r in settings.categories],
             "vision": settings.enable_vision,
         },
         sort_keys=True,
@@ -214,7 +235,7 @@ class Extractor:
             # Thinking is on by default on Opus 5 and shares this budget with the answer,
             # so a multi-leg itinerary at high effort needs real headroom here.
             max_tokens=MAX_TOKENS,
-            system=SYSTEM_PROMPT + _categories_block(settings),
+            system=SYSTEM_PROMPT + _rules_block(settings),
             output_format=ExtractionResult,
             output_config={"effort": settings.anthropic_effort},
             messages=[{"role": "user", "content": _content_blocks(doc, settings)}],

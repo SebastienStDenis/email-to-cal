@@ -58,9 +58,14 @@ class StubCalendar:
         return str(body["id"])
 
 
-def concert_event(confidence: float = 0.95, category: str | None = "music") -> ExtractedEvent:
+def concert_event(
+    confidence: float = 0.95,
+    category: str | None = "music",
+    excluded_by: str | None = None,
+) -> ExtractedEvent:
     return ExtractedEvent(
         kind="concert",
+        excluded_by=excluded_by,
         title="Radiohead at The O2",
         location=EventLocation(name="The O2 Arena", locality="London", country="GB"),
         all_day=False,
@@ -166,10 +171,12 @@ def test_low_confidence_events_are_skipped_not_written(settings: Settings) -> No
     store.close()
 
 
-def test_excluded_kinds_are_dropped_while_the_rest_of_the_email_survives(
+def test_an_excluded_event_is_dropped_while_the_rest_of_the_email_survives(
     settings: Settings,
 ) -> None:
-    settings.excluded_kinds = ["flight"]
+    settings.categories.append(
+        CategoryRule(name="flights", description="Air travel.", action="exclude")
+    )
     flight = ExtractedEvent(
         kind="flight",
         title="LX318 ZRH to LHR",
@@ -178,6 +185,7 @@ def test_excluded_kinds_are_dropped_while_the_rest_of_the_email_survives(
         departure_iata="ZRH",
         arrival_iata="LHR",
         category="travel",
+        excluded_by="flights",
         confidence=0.98,
         reasoning="Airline booking confirmation.",
     )
@@ -200,7 +208,23 @@ def test_excluded_kinds_are_dropped_while_the_rest_of_the_email_survives(
     outcome = pipeline.process(fixture_bytes("flight_jsonld.eml"))
 
     assert [body["summary"] for _, body in calendar.inserted] == ["The Hoxton Shoreditch"]
-    assert outcome.skipped == [("LX318 ZRH to LHR", "flight events are excluded")]
+    assert outcome.skipped == [("LX318 ZRH to LHR", "excluded by 'flights'")]
+    store.close()
+
+
+def test_an_invented_exclusion_name_does_not_lose_the_event(settings: Settings) -> None:
+    """Only a rule the operator actually wrote may drop an event."""
+    result = ExtractionResult(
+        is_committed=True,
+        gate_reasoning="Ticket order confirmed.",
+        events=[concert_event(excluded_by="stuff i dislike")],
+    )
+    pipeline, _, calendar, store = build(settings, result)
+
+    outcome = pipeline.process(fixture_bytes("concert_ics.eml"))
+
+    assert len(calendar.inserted) == 1
+    assert outcome.skipped == []
     store.close()
 
 

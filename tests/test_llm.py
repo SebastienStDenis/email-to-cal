@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from email_to_cal.config import Settings
-from email_to_cal.llm import MAX_TOTAL_ENCODED_BYTES, _content_blocks, cache_key
+from email_to_cal.config import CategoryRule, Settings
+from email_to_cal.llm import MAX_TOTAL_ENCODED_BYTES, _content_blocks, _rules_block, cache_key
 from email_to_cal.mime import parse_email
 from email_to_cal.schema import Attachment, EmailDocument
 
@@ -83,3 +83,35 @@ def test_cache_key_tracks_the_prompt(settings: Settings, monkeypatch) -> None:  
     baseline = cache_key(doc("concert_ics.eml"), settings)
     monkeypatch.setattr("email_to_cal.llm.SYSTEM_PROMPT", "a different gate")
     assert cache_key(doc("concert_ics.eml"), settings) != baseline
+
+
+def test_a_routing_category_hashes_exactly_as_it_did_before_actions_existed(
+    settings: Settings,
+) -> None:
+    """eval-local recomputes historical keys, so a rule using no newer field must not move."""
+    dumped = settings.categories[0].model_dump(exclude_defaults=True)
+    assert set(dumped) == {"name", "description", "calendar"}
+
+
+def test_adding_an_exclusion_changes_the_cache_key(settings: Settings) -> None:
+    baseline = cache_key(doc("concert_ics.eml"), settings)
+    settings.categories.append(
+        CategoryRule(name="flights", description="Air travel.", action="exclude")
+    )
+    assert cache_key(doc("concert_ics.eml"), settings) != baseline
+
+
+def test_exclusions_reach_the_model_in_their_own_section(settings: Settings) -> None:
+    settings.categories.append(
+        CategoryRule(name="flights", description="Air travel.", action="exclude")
+    )
+    block = _rules_block(settings)
+
+    category_section, exclusion_section = block.split("# Exclusions")
+    assert "- travel:" in category_section
+    assert "- flights:" not in category_section
+    assert "- flights: Air travel." in exclusion_section
+
+
+def test_without_exclusions_the_model_is_told_so(settings: Settings) -> None:
+    assert "Always set excluded_by to null" in _rules_block(settings)
