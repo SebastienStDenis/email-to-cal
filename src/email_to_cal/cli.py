@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import os
 import signal
@@ -15,12 +14,12 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from .app import Pipeline, run
+from .app import run
+from .cal import CalendarClient, build_ical
 from .checks import run_checks
 from .config import Settings
-from .gcal import CalendarClient
-from .llm import Extractor
-from .local_llm import make_prefilter
+from .llm import make_extractor
+from .mime import parse_email
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -33,18 +32,15 @@ def _configure_logging(level: str) -> None:
     )
 
 
-def _stop_on_signals(stopping: threading.Event) -> None:
+def _cmd_run(settings: Settings, _args: argparse.Namespace) -> int:
+    stopping = threading.Event()
+
     def _stop(signum: int, _frame: types.FrameType | None) -> None:
         log.info("received signal %d; shutting down", signum)
         stopping.set()
 
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
-
-
-def _cmd_run(settings: Settings, _args: argparse.Namespace) -> int:
-    stopping = threading.Event()
-    _stop_on_signals(stopping)
     run(settings, stopping)
     return 0
 
@@ -76,10 +72,8 @@ def _cmd_serve(_settings: Settings, args: argparse.Namespace) -> int:
 
 def _cmd_check(settings: Settings, _args: argparse.Namespace) -> int:
     """Validate every external dependency, then exit. Safe to run against production."""
-    print(f"categories: {len(settings.categories)} configured")
-    for rule in settings.categories:
-        print(f"  {rule.name} -> {rule.calendar}")
-    print(f"default calendar: {settings.default_calendar}")
+    print(f"provider: {settings.provider}")
+    print(f"calendar: {settings.calendar_name}")
     print(f"default timezone: {settings.default_timezone}")
 
     ok = True
@@ -93,45 +87,26 @@ def _cmd_check(settings: Settings, _args: argparse.Namespace) -> int:
 
 
 def _cmd_replay(settings: Settings, args: argparse.Namespace) -> int:
-    """Run one .eml file through the real pipeline. Honours --dry-run."""
-    raw = Path(args.path).read_bytes()
-    if args.dry_run:
-        settings.dry_run = True
-
-    with Store(settings.state_db) as store:
-        calendar = None if settings.dry_run else CalendarClient(settings, store)
-        pipeline = Pipeline(
-            settings, store, Extractor(settings), calendar, prefilter=make_prefilter(settings)
-        )
-        # Replay is a debugging tool: always re-run, even for mail already handled.
-        outcome = pipeline.process(raw, skip_seen=False)
-
-    print(
-        json.dumps(
-            {
-                "subject": outcome.subject,
-                "committed": outcome.committed,
-                "reason": outcome.reason,
-                "created": outcome.created,
-                "skipped": outcome.skipped,
-            },
-            indent=2,
-        )
+    """Run one .eml file through extraction, as if it had been flagged."""
+    doc = parse_email(
+        Path(args.path).read_bytes(), max_attachment_bytes=settings.max_attachment_bytes
     )
+    events = make_extractor(settings).extract(doc).events
+    if not events:
+        print("no events found", file=sys.stderr)
+        return 1
+
+    calendar = CalendarClient(settings) if args.write else None
+    calendar_url = calendar.resolve(settings.calendar_name) if calendar else None
+
+    for event in events:
+        built = build_ical(event, settings, message_id=doc.message_id)
+        print(f"# {built.describe()}")
+        print(built.ics.decode())
+        if calendar is not None and calendar_url is not None:
+            calendar.put(calendar_url, built.uid, built.ics)
+            print(f"# written to {settings.calendar_name}")
     return 0
-
-
-def _cmd_eval_local(settings: Settings, args: argparse.Namespace) -> int:
-    """Measure the local pre-filter against cached Claude verdicts on real mail."""
-    from .eval_local import run_eval
-
-    return run_eval(
-        settings,
-        days=args.days,
-        limit=args.limit,
-        folders=args.folder,
-        eml_paths=args.eml,
-    )
 
 
 def _cmd_healthcheck(settings: Settings, args: argparse.Namespace) -> int:
@@ -168,7 +143,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="email-to-cal")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("run", help="watch the mailbox and create events").set_defaults(func=_cmd_run)
+    sub.add_parser("run", help="watch for flagged mail and create events").set_defaults(
+        func=_cmd_run
+    )
 
     serve = sub.add_parser("serve", help="run the web portal plus the watcher")
     serve.add_argument("--host", default="127.0.0.1", help="bind address")
@@ -184,28 +161,12 @@ def main(argv: list[str] | None = None) -> int:
         func=_cmd_check
     )
 
-    replay = sub.add_parser("replay", help="run a single .eml through the pipeline")
+    replay = sub.add_parser("replay", help="run a single .eml through extraction")
     replay.add_argument("path")
-    replay.add_argument("--dry-run", action="store_true", help="never write to Google Calendar")
+    replay.add_argument(
+        "--write", action="store_true", help="also write the events to the calendar"
+    )
     replay.set_defaults(func=_cmd_replay)
-
-    eval_local = sub.add_parser(
-        "eval-local",
-        help="measure the local pre-filter against cached Claude verdicts on your mail",
-    )
-    eval_local.add_argument("eml", nargs="*", help=".eml files to evaluate instead of IMAP")
-    eval_local.add_argument(
-        "--days", type=int, default=90, help="how far back to fetch mail over IMAP"
-    )
-    eval_local.add_argument(
-        "--limit", type=int, default=0, help="stop after comparing this many emails (0 = all)"
-    )
-    eval_local.add_argument(
-        "--folder",
-        action="append",
-        help="IMAP folder to read (repeatable); defaults to the watched folder",
-    )
-    eval_local.set_defaults(func=_cmd_eval_local)
 
     health = sub.add_parser("healthcheck", help="check the portal, falling back to the heartbeat")
     health.add_argument("--port", type=int, default=8080, help="portal port to probe")

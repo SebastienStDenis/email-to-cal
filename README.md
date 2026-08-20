@@ -1,97 +1,69 @@
 # email-to-cal
 
-Watches an iCloud mailbox and turns the events you actually committed to into Google
-Calendar entries, routed to per-category calendars. Configured from a small web portal;
-runs from a checkout or as a Docker container.
+Flag an email in Mail. It becomes a calendar event.
 
-The point is not to find dates in email - that part is easy. The point is to only create
-events you actually signed up for. "You've bought tickets for Radiohead" becomes a
-calendar entry. "Concerts near you this weekend" does not.
+That is the whole interface. You decide what deserves a calendar entry by flagging it -
+the red flag, from your phone, your laptop, anywhere - and the service reads that email,
+writes the events it describes to your iCloud calendar, and takes the flag off. If it
+cannot, the flag stays on and your phone tells you why.
+
+One Apple ID and one app-specific password cover both the mail and the calendar.
 
 ## How it works
 
 ```
-iCloud IMAP (IDLE)  →  MIME extraction  →  local filter  →  Claude  →  timezone resolution  →  Google Calendar
-                       JSON-LD              (optional)        is this a     IATA → IANA           idempotent insert
-                       .ics                 discard obvious   commitment?   city → IANA           per-category routing
-                       text/plain           junk for free     extract       default
-                       HTML → text                            categorise
-                       PDF / images
+iCloud IMAP           MIME extraction      model            CalDAV
+every folder     →    JSON-LD           →  extract the   →  write to iCloud
+search for the        .ics                 events           unflag the message
+red flag              text/plain                            push to your phone
+                      HTML → text
+                      PDF / images
 ```
 
-The local filter is an optional cost cut: a free model served by
-[Ollama](https://ollama.com) on the same machine discards obvious junk before it costs
-an API call - see [The local junk filter](#the-local-junk-filter-optional).
-
 Extraction is tiered so the reliable sources win. Airlines and ticketing platforms embed
-[schema.org](https://schema.org/) JSON-LD in their HTML because Gmail and Outlook read it,
-which hands us exact flight numbers, airport codes, and times with no guessing. Failing
-that, a `.ics` attachment. Failing that, plain text, then rendered HTML, then PDFs and
-images passed to the model as vision input - which is how boarding passes and e-tickets
-get read.
+[schema.org](https://schema.org/) JSON-LD in their HTML because Gmail and Outlook read
+it, which hands over exact flight numbers, airport codes, and times with no guessing.
+Failing that, a `.ics` attachment. Failing that, plain text, then rendered HTML, then
+PDFs and images passed to the model as vision input - which is how boarding passes and
+e-tickets get read.
 
 Timezones are resolved deterministically: an explicit zone in the email beats an offline
 IATA airport lookup, which beats a city match, which beats your configured default. A
 Tokyo → Los Angeles flight gets `Asia/Tokyo` on the departure and `America/Los_Angeles`
 on the arrival, and renders correctly in both.
 
-Locations are written as full addresses, because Google Calendar geocodes the location
-string and only shows a map, directions, and travel time when it resolves. The model
-collects the address in parts - venue, street, city, region, postal code, country - from
-wherever the email states them, and they are rendered into one line in the order a
-geocoder expects. Flights are filled in from the offline airport dataset instead, so a
-flight from `LGA` gets `Laguardia Airport, New York, US` rather than an airport code.
+Locations are written as full addresses, because a calendar geocodes the location string
+and only shows a map, directions, and travel time when it resolves. The model collects
+the address in parts - venue, street, city, region, postal code, country - from wherever
+the email states them, and they are rendered into one line in the order a geocoder
+expects. Flights are filled in from the offline airport dataset instead, so a flight from
+`LGA` gets `Laguardia Airport, New York, US` rather than an airport code.
 
-Re-delivering the same email is a no-op: every event gets a deterministic id derived from
-the message and the event's identity, so a duplicate insert is recognised and ignored
-rather than double-booking you. The same booking arriving in a *different* email - a
-reminder, an updated itinerary - is caught fuzzily instead: an event on the target
-calendar starting within an hour (configurable under Advanced settings) with a
-near-identical title or the same booking reference means nothing new is created.
-
-Every event links back to the email it came from: a `message://` deep link in the event's
-URL field, which Apple Calendar opens in Mail. Google's JSON API takes no URL outside
-http(s), so the link is written over CalDAV - which is why the setup enables the CalDAV
-API alongside the Calendar API.
+Each event gets a UID derived from the message and the event's identity, and that UID
+names the resource on the server. Flagging the same email again rewrites the same event
+instead of adding a second one.
 
 ## Prerequisites
 
-Whichever way you run it, you need three credentials. Have them ready before you start.
+### An iCloud app-specific password
 
-### iCloud app-specific password
-
-Apple's 2FA blocks plain passwords for IMAP clients, so you need an app-specific one:
-[appleid.apple.com](https://appleid.apple.com) → Sign-In and Security → App-Specific
-Passwords. Give this service its own so you can revoke it independently.
+Apple's 2FA blocks plain passwords for IMAP and CalDAV clients, so you need an
+app-specific one: [appleid.apple.com](https://appleid.apple.com) → Sign-In and Security →
+App-Specific Passwords. Give this service its own so you can revoke it independently.
 
 > Changing your Apple ID password revokes **every** app-specific password. If the service
-> starts failing to authenticate, that is almost always why. It logs a clear message and
-> exits rather than hammering Apple with retries.
+> starts failing to authenticate, that is almost always why.
 
-### Google OAuth client
+### A calendar to write to
 
-A one-time, five-minute setup in the Google Cloud console. You come out of it with two
-strings: a client id and a client secret.
+Create it in the Calendar app, on any iCloud account, and note its exact name. The
+service writes there and nowhere else.
 
-1. At [console.cloud.google.com](https://console.cloud.google.com), create a project.
-2. **APIs & Services → Library** → enable the **Google Calendar API** and the
-   **CalDAV API**.
-3. **APIs & Services → OAuth consent screen** (Google Auth Platform): set it up for
-   **External** users, then set the publishing status to **In production**.
-4. **APIs & Services → Credentials → Create Credentials → OAuth client ID → Desktop
-   app**. Copy the client id and client secret.
+### An Anthropic API key
 
-Step 3 is not optional. An app left in **Testing** issues refresh tokens that expire
-after **7 days**, and the service will silently stop working every week. Publishing does
-*not* require Google's verification review - you will see a one-time "Google hasn't
-verified this app" screen (Advanced → Go to …), and Google explicitly exempts apps used
-only by their author.
-
-### Anthropic API key
-
-From [console.anthropic.com](https://console.anthropic.com). Extraction uses one model
-call per email, cached by content, so a personal mailbox costs very little - and the
-optional [local junk filter](#the-local-junk-filter-optional) cuts it further.
+From [console.anthropic.com](https://console.anthropic.com). Only the email you flag is
+ever read, so a personal mailbox costs very little. To spend nothing at all, use a
+[local model](#running-a-local-model-instead) instead.
 
 ## Run it
 
@@ -104,24 +76,19 @@ uv run email-to-cal serve
 
 Open [http://127.0.0.1:8080](http://127.0.0.1:8080) and the portal takes it from there:
 
-1. **Settings** - paste the three credentials from the prerequisites, name your
-   categories, save.
-2. **Connect Google Calendar** - one click through Google's consent screen. Do this from
-   a browser where the portal is reachable as `localhost`, because Google returns the
-   authorisation to a loopback address.
-3. **Status** - watch it work: watcher state, recent events, failures, and a "Run
-   checks" button that exercises IMAP, Anthropic, and Google end to end.
+1. **Settings** - your iCloud address and app password, an Anthropic key, the name of
+   your calendar. Save.
+2. **Status** - **Check connections** exercises the mailbox, the model, and the calendar
+   end to end, and lists every calendar it can see.
+3. Flag an email in Mail. Within a minute the event is on your calendar and the flag is
+   gone.
 
-New installs start in **preview mode**: the service logs exactly what it would put on
-your calendar without writing anything. Watch a day of mail, tune the category
-descriptions, then switch preview mode off in Settings.
-
-Everything lands in `data/` inside your checkout: the configuration (`config.json`),
-the Google token, and the state database. The other commands read the same
-configuration, so once set up you can also run it headless:
+Everything lands in `data/` inside your checkout: the configuration (`config.json`) and
+the state database. The other commands read the same configuration, so once set up you
+can also run it headless:
 
 ```sh
-uv run email-to-cal check   # exercises IMAP, Anthropic, and Google, then exits
+uv run email-to-cal check   # exercises the mailbox, the model, and the calendar
 uv run email-to-cal run     # the watcher without the portal
 ```
 
@@ -143,7 +110,7 @@ services:
       # reach it with: ssh -L 8080:localhost:8080 your-server
       - "127.0.0.1:8080:8080"
     volumes:
-      # Holds config.json, token.json, and state.sqlite. Back this up.
+      # Holds config.json and state.sqlite. Back this up.
       - data:/app/data
 
 volumes:
@@ -156,10 +123,9 @@ Then:
 docker compose up -d
 ```
 
-Open [http://localhost:8080](http://localhost:8080) (through the SSH tunnel if the
-server is remote - Google's consent step needs the portal reachable as `localhost`) and
-configure exactly as above. Upgrade with `docker compose pull && docker compose up -d`.
-The equivalent bare `docker run`, if you don't use compose:
+Open [http://localhost:8080](http://localhost:8080), through the SSH tunnel if the server
+is remote, and configure exactly as above. Upgrade with
+`docker compose pull && docker compose up -d`. The equivalent bare `docker run`:
 
 ```sh
 docker run -d --name email-to-cal --restart unless-stopped \
@@ -167,179 +133,86 @@ docker run -d --name email-to-cal --restart unless-stopped \
   ghcr.io/sebastienstdenis/email-to-cal:latest
 ```
 
-## Which folders it reads
+## Which flag, and which mail
 
-The watched folder (default `INBOX`) gets a live IDLE connection. That matters because
-of a race: if you read a booking confirmation on your phone and archive it before the
-service has seen it, the move deletes it from INBOX and gives it a fresh UID somewhere
-else, and it is gone as far as the watcher is concerned. The window is seconds in steady
-state and wide open during restarts and deploys.
+The **red** flag, which is the plain flag every Mail client sets by default. Apple stores
+flag colours as `\Flagged` plus a `$MailFlagBitN` keyword per colour, and red is the one
+with no colour bits - so a message flagged red on an iPhone reads as red everywhere.
+Rename it to whatever you like in Mail; the colour is what counts. Your other flag
+colours keep whatever meaning you already give them.
 
-Swept folders close it. They get a catch-up pass every sweep interval (default 15
-minutes) on the *same* connection - iCloud allows only about five connections per
-account and your phone and Mac already use some, so a second push connection is the
-wrong trade. New mail always lands in the watched folder first, so a sweep is
-sufficient; swept folders never backfill, and anything already handled is skipped by
-Message-ID.
+Every folder is searched on each pass, so it makes no difference where the mail is filed
+or whether you file it after flagging. Junk, Deleted Messages, and Drafts are skipped.
 
-## Categories
+Nothing else about the mailbox is touched: messages are fetched without marking them
+read, and the only write is clearing the flag once the events are on your calendar.
 
-Each row in the portal is a rule the model matches events against - either **add to** a
-calendar, or **never add**:
+## When it cannot be done
 
-| Name | Description | Action | Calendar |
-| --- | --- | --- | --- |
-| travel | Flights, trains, ferries, and hotel stays. Anything involving getting to or staying somewhere away from home. | Add to | Sebastiens Travels |
-| music | Concerts, gigs, festivals, and club nights the recipient has tickets for. | Add to | Music |
-| flights | Air travel: flights, boarding passes, seat changes, and check-in reminders. | Never add | |
+The flag stays on, and that is deliberate - a failed email stays visible exactly where
+you left it.
 
-The description is what the model matches an event against, so write it for the model:
-say what belongs *and* what does not. Anything that matches no category goes to the
-default calendar. Calendars that do not exist yet are created on first run.
+- **Nothing to put on a calendar.** The model read the email and found no event. You get
+  a push straight away, because asking again would get the same answer.
+- **Something was down.** The calendar server, the model, the network. It is retried
+  after two minutes, then after ten. If it still fails, you get a push and the service
+  stops trying.
 
-An event matching a **never add** rule is dropped whatever else it matches, and the
-reason is logged. The row above keeps flights off every calendar while the trains and
-hotels of the same trip still land on the travel one. Write these the way you write a
-category - in your own words, as broad or as narrow as you want.
-
-## Commands
-
-The container runs `serve` by default. The rest exist for the repo path and for
-debugging:
-
-| Command | What it does |
-| --- | --- |
-| `serve` | The web portal plus the watcher. What the container runs. |
-| `run` | Watch the mailbox and create events, headless. |
-| `check` | Validate config and every external dependency, then exit. |
-| `replay FILE.eml` | Push one saved email through the real pipeline. Add `--dry-run`. |
-| `eval-local` | Measure the local junk filter against cached Claude verdicts on your own mail. |
-| `healthcheck` | Used by the container `HEALTHCHECK`. |
-
-`replay` is the tool for tuning. Save a message that was handled wrongly, run it, and
-read the model's `gate_reasoning`:
-
-```sh
-uv run email-to-cal replay samples/weird.eml --dry-run
-```
-
-## Tuning the gate
-
-Two settings control how eager the service is:
-
-- **Minimum confidence** (default `0.75`) - events below this are logged with the reason
-  and dropped. Raise it if you get junk, lower it if real bookings are being missed.
-- **Effort** (default `medium`) - how hard the model thinks. `high` catches more awkward
-  emails at higher cost.
-
-Model responses are cached in the state database keyed by content, so replays and
-restarts never re-bill you for the same email.
-
-## The local junk filter (optional)
-
-Claude reads every email that arrives, ads included, at API prices. The junk filter
-puts a free model in front of it: a small open-weight model served by
-[Ollama](https://ollama.com) on the same machine answers one question per email -
-*could this plausibly contain a personal commitment?* - and discards the obvious
-noes (newsletters, promos, digests, receipts for things already over) before they
-cost an API call. On a typical inbox that is most of the mail.
-
-The design is deliberately lopsided, because the two mistakes are not equal:
-
-- The filter is **only allowed to reject**; anything it is unsure about passes. A
-  wrongly passed email costs one API call; a wrongly discarded one is a booking that
-  silently never reaches your calendar.
-- Emails carrying **.ics or JSON-LD data bypass the filter entirely** - senders embed
-  those for real bookings, and a cheap model gets no veto over them. PDF attachments
-  contribute their text layer, so a "boarding pass attached" email with an empty body
-  still shows the filter its flight.
-- **Every failure fails open.** Ollama down, model not pulled, garbage output: the
-  email goes to Claude exactly as if the filter were off. The filter can only ever
-  save money, never mail.
-
-Claude still makes every real decision - the commitment gate, the extraction, the
-categories - so nothing about quality changes.
-
-**Setup.** Run Ollama next to the service and pull the model (roughly 16 GB of free
-RAM for the default). With the Docker deployment, add a sibling container:
-
-```yaml
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ollama
-    restart: unless-stopped
-    volumes:
-      - ollama:/root/.ollama    # model weights, survives updates
-```
-
-```sh
-docker compose up -d
-docker exec ollama ollama pull gpt-oss:20b
-```
-
-Then tick **Filter junk with a free local model first** in the portal's Claude card
-(Ollama server under Advanced: `http://ollama:11434` for the sibling container), and
-run the checks on the Status page.
-
-**Measure before you trust it.** If the service has been running for a while, every
-past Claude verdict is cached. `eval-local` replays your real mail through the filter
-and checks each would-be discard against what Claude actually concluded, without a
-single API call:
-
-```sh
-docker exec -it email-to-cal email-to-cal eval-local --days 90
-```
-
-It reports how many API calls the filter would have saved and - most importantly -
-**wrong discards**: emails Claude considered real bookings that the filter would have
-dropped. The exit code is non-zero when any exist. Filter verdicts computed during the
-eval are cached, so enabling the filter afterwards starts warm.
+Either way the email keeps its flag and appears under **Still flagged** on the Status
+page, with **Try again** to run it once more. Unflagging it in Mail drops it.
 
 ## Phone notifications
 
 Optional pushes through [Pushover](https://pushover.net). Register an application for
-this service at [pushover.net/apps/build](https://pushover.net/apps/build), then enter
-its API token and your user key in the portal.
+this service at [pushover.net/apps/build](https://pushover.net/apps/build), then enter its
+API token and your user key in the portal.
 
-A created-event push carries a link that opens the iOS Calendar app on the event's day.
+Both outcomes are pushed. A created event arrives silently and opens the Calendar app on
+the day of the event; a failure arrives as a normal push and opens the email it came
+from. Anything that stops the service - an expired app password, a rejected API key -
+arrives at high priority. The event itself carries a link back to the email, so the way
+back is always there.
 
-Notifications are sent at the priority they deserve: created events arrive silently,
-per-message failures arrive as a normal push, and anything that stops the service - an
-expired app password, a rejected API key - arrives at high priority, because mail goes
-unread until someone acts. Created-event and error notifications can each be switched
-off in the portal; sounds and quiet hours are the Pushover app's job.
+Delivery is best-effort: a Pushover outage is logged and ignored, never allowed to stall
+mail processing. `check` validates the keys without sending anything.
 
-Delivery is best-effort. A Pushover outage is logged and ignored, never allowed to
-stall mail processing. `check` validates the keys against Pushover's validation
-endpoint without sending anything.
+## Running a local model instead
+
+Set the model to **Local model** in the portal and point it at an
+[Ollama](https://ollama.com) server. Nothing leaves the machine and nothing is billed.
+
+```sh
+ollama pull gpt-oss:20b
+```
+
+A local model reads text only. PDF attachments contribute their text layer, so an
+e-ticket with an empty body still shows the model its flight, but a scanned ticket or a
+boarding-pass photo comes back with no events - which arrives as a failure notification.
+
+## Commands
+
+```sh
+email-to-cal serve         # the portal plus the watcher; how the container runs
+email-to-cal run           # the watcher alone
+email-to-cal check         # exercise every dependency, then exit
+email-to-cal replay a.eml  # run one .eml through extraction and print the iCalendar
+email-to-cal healthcheck   # used by the container HEALTHCHECK
+```
+
+`replay` takes `--write` to actually put the events on the calendar.
 
 ## Operational notes
 
 - **One IMAP connection, always.** iCloud allows only a handful per account and shares
-  that budget with your phone and laptop. The service holds exactly one, cycling `IDLE`
-  every five minutes, and backs off exponentially if Apple pushes back.
-- **The mailbox is never modified.** Messages are fetched with `BODY.PEEK[]`, so nothing
-  is marked read, flagged, or moved. Processing state lives entirely in
-  `data/state.sqlite`.
-- **Back up the data volume.** It holds your configuration, your Google token, and the
-  record of what has been processed. Losing it means reconfiguring and re-authorising -
-  though the deterministic event ids mean reprocessed mail still will not duplicate
-  anything already in your calendar.
-- **A poison email cannot wedge the loop.** Failures are logged per-message and the
-  cursor advances; written-off messages show up on the Status page.
-- **The portal has no authentication.** It holds your credentials, so publish its port
-  to localhost only (as the compose file above does) and use an SSH tunnel from
-  anywhere else.
-
-## Scopes
-
-The service requests `https://www.googleapis.com/auth/calendar` because creating a
-missing calendar needs `calendars.insert` and routing needs `calendarList.list`.
-
-If you would rather it could never touch your existing calendars, swap `SCOPES` in
-`src/email_to_cal/gcal.py` for `https://www.googleapis.com/auth/calendar.app.created`,
-set the default calendar to a name that does not exist yet, and re-authorise. The
-service will then create and write to only its own calendars.
+  that budget with your phone and laptop. The service holds exactly one, and backs off
+  exponentially if Apple pushes back.
+- **Back up the data volume.** It holds your configuration and the record of what has
+  been processed. Reprocessed mail will not duplicate anything already on your calendar.
+- **One bad email cannot wedge the loop.** Failures are recorded per message, retried a
+  couple of times, then set aside.
+- **The portal has no authentication.** It holds your credentials, so publish its port to
+  localhost only, as the compose file above does, and use an SSH tunnel from anywhere
+  else.
 
 ## Development
 

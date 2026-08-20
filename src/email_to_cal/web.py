@@ -1,4 +1,4 @@
-"""The portal: configure the service, connect Google, and watch it work.
+"""The portal: configure the service and watch it work.
 
 The portal writes data/config.json (the configuration source of truth, overridable by
 environment variables), owns the watcher thread, and restarts it whenever the
@@ -15,11 +15,9 @@ import threading
 import time
 from collections.abc import Mapping
 from typing import Any
-from urllib.parse import urlsplit
 from zoneinfo import available_timezones
 
-from flask import Flask, Response, flash, redirect, render_template, request, session, url_for
-from google_auth_oauthlib.flow import Flow
+from flask import Flask, Response, flash, redirect, render_template, request, url_for
 from pydantic import ValidationError
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.wrappers import Response as WerkzeugResponse
@@ -27,59 +25,48 @@ from werkzeug.wrappers import Response as WerkzeugResponse
 from .app import run
 from .checks import run_checks
 from .config import CONFIG_FILE, Settings
-from .gcal import SCOPES, client_config, save_token
 from .store import Store
 
 log = logging.getLogger(__name__)
 
 # The settings the form manages; exactly these end up in config.json.
 FORM_FIELDS = [
+    "apple_id",
+    "apple_password",
     "imap_host",
     "imap_port",
-    "imap_username",
-    "imap_password",
-    "imap_folder",
-    "imap_idle_seconds",
-    "first_run_lookback_days",
-    "sweep_folders",
-    "sweep_interval_minutes",
+    "poll_interval_seconds",
+    "provider",
     "anthropic_api_key",
     "anthropic_model",
     "anthropic_effort",
-    "local_filter_enabled",
     "ollama_url",
     "ollama_model",
     "enable_vision",
     "max_attachment_mb",
-    "min_confidence",
-    "dedup_window_minutes",
-    "google_client_id",
-    "google_client_secret",
-    "default_calendar",
+    "caldav_url",
+    "calendar_name",
     "default_timezone",
-    "categories",
     "pushover_user",
     "pushover_token",
-    "pushover_notify_events",
-    "pushover_notify_errors",
-    "dry_run",
     "log_level",
 ]
 
-# The watcher heartbeats at least once per IDLE cycle (default 300s); well past that
-# means it is wedged, not slow.
+CHECKBOX_FIELDS = {"enable_vision"}
+
+# The watcher heartbeats once per poll (default 60s); well past that means it is wedged.
 HEARTBEAT_MAX_AGE_SECONDS = 900.0
 
 
 def missing_for_start(settings: Settings) -> list[str]:
     """What still has to be configured before the watcher can run."""
     missing = []
-    if not settings.imap_username or not settings.imap_password:
+    if not settings.apple_id or not settings.apple_password:
         missing.append("iCloud credentials")
-    if not settings.anthropic_api_key:
+    if settings.provider == "anthropic" and not settings.anthropic_api_key:
         missing.append("Anthropic API key")
-    if not settings.dry_run and not settings.google_token_file.exists():
-        missing.append("Google authorisation")
+    if not settings.calendar_name:
+        missing.append("calendar name")
     return missing
 
 
@@ -118,7 +105,8 @@ class Supervisor:
         if self._thread is None:
             return
         self._stopping.set()
-        # IDLE is sliced at 10s, so a healthy watcher notices well inside this window.
+        # The loop waits on the stop event between polls, so it notices immediately
+        # unless it is mid-email.
         self._thread.join(timeout=30)
         if self._thread.is_alive():
             log.warning("watcher thread did not stop in time; abandoning it")
@@ -139,33 +127,10 @@ def form_values(settings: Settings) -> dict[str, Any]:
 
 def parse_form(form: Any) -> dict[str, Any]:
     """The submitted form as Settings keyword arguments, still unvalidated."""
-    values: dict[str, Any] = {}
-    for name in FORM_FIELDS:
-        if name in (
-            "enable_vision",
-            "local_filter_enabled",
-            "dry_run",
-            "pushover_notify_events",
-            "pushover_notify_errors",
-        ):
-            values[name] = name in form
-        elif name == "sweep_folders":
-            # One hidden input per chip, so folder names need no delimiter at all.
-            values[name] = [f.strip() for f in form.getlist("sweep_folder") if f.strip()]
-        elif name == "categories":
-            values[name] = [
-                {"name": n, "description": d, "calendar": c, "action": a}
-                for n, d, c, a in zip(
-                    form.getlist("category_name"),
-                    form.getlist("category_description"),
-                    form.getlist("category_calendar"),
-                    form.getlist("category_action"),
-                    strict=True,
-                )
-                if n.strip() or d.strip() or c.strip()
-            ]
-        else:
-            values[name] = form.get(name, "").strip()
+    values: dict[str, Any] = {
+        name: name in form if name in CHECKBOX_FIELDS else form.get(name, "").strip()
+        for name in FORM_FIELDS
+    }
     # A cleared field means "back to the default", not "the empty string is my host".
     return {name: value for name, value in values.items() if value != ""}
 
@@ -188,17 +153,12 @@ def _readable_error(err: Mapping[str, Any]) -> str:
     return f"{field}: {message}" if field else message
 
 
-def _oauth_redirect_uri() -> str:
-    return url_for("google_callback", _external=True)
-
-
 def create_app(supervisor: Supervisor) -> Flask:
     app = Flask(__name__)
     # Honour X-Forwarded-Proto/Host from a fronting proxy (tailscale serve, caddy), so
-    # the Google redirect URI comes out as the https address the browser is really on.
+    # generated links come out as the address the browser is really on.
     app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1, x_port=1)  # type: ignore[method-assign]
-    # Sessions only carry flashes and the OAuth state token, so a key that rotates on
-    # restart costs nothing.
+    # Sessions only carry flashes, so a key that rotates on restart costs nothing.
     app.secret_key = secrets.token_hex(32)
 
     @app.template_filter("ago")
@@ -215,8 +175,7 @@ def create_app(supervisor: Supervisor) -> Flask:
 
     @app.get("/")
     def index() -> WerkzeugResponse:
-        settings = Settings()
-        if missing_for_start(settings):
+        if missing_for_start(Settings()):
             return redirect(url_for("settings_page"))
         return redirect(url_for("status_page"))
 
@@ -226,7 +185,6 @@ def create_app(supervisor: Supervisor) -> Flask:
         return render_template(
             "settings.html",
             values=form_values(settings),
-            google_connected=settings.google_token_file.exists(),
             missing=missing_for_start(settings),
             timezones=sorted(available_timezones()),
         )
@@ -237,76 +195,17 @@ def create_app(supervisor: Supervisor) -> Flask:
         try:
             save_config(values)
         except ValidationError as exc:
-            errors = [_readable_error(err) for err in exc.errors()]
             return render_template(
                 "settings.html",
                 values=values,
-                google_connected=Settings().google_token_file.exists(),
                 missing=[],
-                errors=errors,
+                errors=[_readable_error(err) for err in exc.errors()],
                 timezones=sorted(available_timezones()),
             )
         supervisor.restart()
-        settings = Settings()
-
-        if request.form.get("action") == "connect":
-            if not settings.google_client_id or not settings.google_client_secret:
-                flash("Enter the Google client id and secret to connect.")
-                return redirect(url_for("settings_page"))
-            parts = urlsplit(request.url)
-            local = parts.hostname in ("localhost", "127.0.0.1", "::1")
-            if not local and parts.scheme != "https":
-                # Google accepts loopback redirects (Desktop clients) and registered
-                # https redirects (Web application clients); a plain-http remote host
-                # is neither, and letting it through ends on a cryptic policy page.
-                port = parts.port or 80
-                flash(
-                    "Your settings were saved, but Google cannot connect from "
-                    f"http://{parts.hostname}. Either run "
-                    f"'ssh -L {port}:localhost:{port} {parts.hostname}' on your "
-                    f"computer and connect from http://localhost:{port}/settings "
-                    "(one time), or serve this page over HTTPS and use a Web "
-                    "application client; see the Google section's walkthrough."
-                )
-                return redirect(url_for("settings_page"))
-            flow = Flow.from_client_config(
-                client_config(settings), scopes=SCOPES, redirect_uri=_oauth_redirect_uri()
-            )
-            auth_url, state = flow.authorization_url(access_type="offline", prompt="consent")
-            session["oauth_state"] = state
-            # PKCE: the flow hashed a fresh code verifier into the auth URL, and the
-            # callback runs on a new Flow instance that must present the same verifier
-            # or Google rejects the exchange with "Missing code verifier".
-            session["code_verifier"] = flow.code_verifier
-            return redirect(auth_url)
-
         flash("Settings saved.")
-        if missing_for_start(settings):
+        if missing_for_start(Settings()):
             return redirect(url_for("settings_page"))
-        return redirect(url_for("status_page"))
-
-    @app.get("/google/callback")
-    def google_callback() -> WerkzeugResponse:
-        settings = Settings()
-        flow = Flow.from_client_config(
-            client_config(settings),
-            scopes=SCOPES,
-            redirect_uri=_oauth_redirect_uri(),
-            state=session.pop("oauth_state", None),
-        )
-        flow.code_verifier = session.pop("code_verifier", None)
-        try:
-            # The redirect arrives over plain http because this is a loopback flow;
-            # oauthlib insists on https, so present it as such (the token exchange
-            # itself really is https). Same trick InstalledAppFlow uses.
-            flow.fetch_token(authorization_response=request.url.replace("http://", "https://", 1))
-        except Exception as exc:
-            log.warning("Google authorisation failed", exc_info=True)
-            flash(f"Google authorisation failed: {exc}")
-            return redirect(url_for("settings_page"))
-        save_token(settings, flow.credentials)
-        supervisor.restart()
-        flash("Google Calendar connected.")
         return redirect(url_for("status_page"))
 
     @app.get("/status")
@@ -321,14 +220,28 @@ def create_app(supervisor: Supervisor) -> Flask:
             running=supervisor.running,
             missing=supervisor.missing,
             error=supervisor.error,
-            dry_run=settings.dry_run,
+            calendar=settings.calendar_name,
             beat_age=None if beat is None else time.time() - beat,
             events=[
-                (summary, calendar_id, time.time() - created)
-                for summary, calendar_id, created in events
+                (summary, starts, time.time() - created) for summary, starts, created in events
             ],
             failures=failures,
         )
+
+    @app.post("/retry")
+    def retry() -> WerkzeugResponse:
+        """Forget a failure so the message - still flagged - is tried again."""
+        settings = Settings()
+        with Store(settings.state_db) as store:
+            message_id = request.form.get("message_id", "")
+            if message_id:
+                store.clear_failure(message_id)
+                flash("That email will be tried again on the next pass.")
+            else:
+                for failure in store.list_failures():
+                    store.clear_failure(failure.message_id)
+                flash("All set-aside emails will be tried again on the next pass.")
+        return redirect(url_for("status_page"))
 
     @app.post("/restart")
     def restart() -> WerkzeugResponse:
@@ -338,8 +251,7 @@ def create_app(supervisor: Supervisor) -> Flask:
 
     @app.post("/check")
     def check() -> str:
-        settings = Settings()
-        return render_template("checks.html", results=run_checks(settings))
+        return render_template("checks.html", results=run_checks(Settings()))
 
     @app.get("/healthz")
     def healthz() -> Response:
@@ -348,8 +260,7 @@ def create_app(supervisor: Supervisor) -> Flask:
             if supervisor.error:
                 return Response(f"watcher stopped: {supervisor.error}\n", status=500)
             return Response("ok (waiting for configuration)\n")
-        settings = Settings()
-        with Store(settings.state_db) as store:
+        with Store(Settings().state_db) as store:
             beat = store.last_beat()
         age = None if beat is None else time.time() - beat
         if age is not None and age > HEARTBEAT_MAX_AGE_SECONDS:

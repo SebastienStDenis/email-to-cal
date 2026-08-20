@@ -1,34 +1,23 @@
 from __future__ import annotations
 
-import base64
-import hashlib
 import json
-import re
-from pathlib import Path
 
 import pytest
 from flask.testing import FlaskClient
 
 from email_to_cal.config import CONFIG_FILE, Settings
+from email_to_cal.store import Store
 from email_to_cal.web import Supervisor, create_app, missing_for_start
 
 FORM = {
-    "imap_username": "test@icloud.com",
-    "imap_password": "xxxx-xxxx",
-    "imap_folder": "INBOX",
-    "sweep_folder": ["Archive", "Sent"],
+    "apple_id": "test@icloud.com",
+    "apple_password": "xxxx-xxxx",
+    "provider": "anthropic",
     "anthropic_api_key": "sk-ant-test",
-    "min_confidence": "0.8",
-    "google_client_id": "abc.apps.googleusercontent.com",
-    "google_client_secret": "GOCSPX-x",
-    "default_calendar": "primary",
+    "calendar_name": "Bookings",
     "default_timezone": "Europe/Zurich",
-    "dry_run": "on",
+    "enable_vision": "on",
     "log_level": "INFO",
-    "category_name": ["travel"],
-    "category_description": ["Flights and hotels."],
-    "category_calendar": ["Travels"],
-    "category_action": ["include"],
 }
 
 
@@ -46,170 +35,89 @@ def client(supervisor: Supervisor) -> FlaskClient:
 
 
 def test_saving_the_form_writes_config_json_that_settings_pick_up(client: FlaskClient) -> None:
-    reply = client.post("/settings", data=FORM)
-    assert reply.status_code == 302
+    response = client.post("/settings", data=FORM)
+    assert response.status_code == 302
 
-    saved = json.loads(Path(CONFIG_FILE).read_text())
-    assert saved["imap_username"] == "test@icloud.com"
+    saved = json.loads(CONFIG_FILE.read_text())
+    assert saved["apple_id"] == "test@icloud.com"
+    assert saved["calendar_name"] == "Bookings"
 
     settings = Settings()
-    assert settings.imap_username == "test@icloud.com"
-    assert settings.sweep_folders == ["Archive", "Sent"]
-    assert settings.min_confidence == 0.8
-    assert settings.dry_run is True
-    assert [rule.name for rule in settings.categories] == ["travel"]
-    # Fields the form left empty fall back to their defaults instead of going blank.
-    assert settings.imap_host == "imap.mail.me.com"
-
-
-def test_swept_folder_names_may_contain_spaces_and_commas(client: FlaskClient) -> None:
-    """Each chip is its own form field, so no character in a folder name is special."""
-    folders = ["Deleted Messages", "Receipts, Travel"]
-    client.post("/settings", data={**FORM, "sweep_folder": folders})
-    assert Settings().sweep_folders == folders
-
-    page = client.get("/settings")
-    assert b"Receipts, Travel" in page.data
-
-
-def test_settings_page_offers_timezone_suggestions(client: FlaskClient) -> None:
-    page = client.get("/settings")
-    assert b"timezone-suggestions" in page.data
-    assert b"Europe/Zurich" in page.data
-
-
-def test_an_exclusion_row_round_trips_without_a_calendar(client: FlaskClient) -> None:
-    form = {
-        **FORM,
-        "category_name": ["travel", "flights"],
-        "category_description": ["Trains and hotels.", "Air travel."],
-        "category_calendar": ["Travels", ""],
-        "category_action": ["include", "exclude"],
-    }
-    client.post("/settings", data=form)
-
-    rules = Settings().categories
-    assert [(rule.name, rule.action, rule.calendar) for rule in rules] == [
-        ("travel", "include", "Travels"),
-        ("flights", "exclude", ""),
-    ]
-
-    page = client.get("/settings")
-    assert re.search(rb'value="exclude"\s*\n?\s*selected', page.data) is not None
-
-
-def test_a_routing_category_without_a_calendar_is_rejected(client: FlaskClient) -> None:
-    reply = client.post("/settings", data={**FORM, "category_calendar": [""]})
-    assert reply.status_code == 200
-    assert b"needs a calendar to route to" in reply.data
-    assert not Path(CONFIG_FILE).exists()
+    assert settings.apple_password == "xxxx-xxxx"
+    assert settings.default_timezone == "Europe/Zurich"
 
 
 def test_unchecked_checkboxes_come_back_false(client: FlaskClient) -> None:
-    form = {key: value for key, value in FORM.items() if key != "dry_run"}
-    client.post("/settings", data=form)
-    assert Settings().dry_run is False
+    # A browser sends nothing at all for an unchecked box, which must read as "off"
+    # rather than "leave it as it was".
+    client.post("/settings", data={k: v for k, v in FORM.items() if k != "enable_vision"})
+    assert Settings().enable_vision is False
 
 
 def test_invalid_input_rerenders_the_form_and_writes_nothing(client: FlaskClient) -> None:
-    reply = client.post("/settings", data={**FORM, "default_timezone": "Europe/Atlantis"})
-    assert reply.status_code == 200
-    assert b"not a recognised time zone" in reply.data
-    assert not Path(CONFIG_FILE).exists()
+    response = client.post("/settings", data={**FORM, "default_timezone": "Middle/Earth"})
+    assert response.status_code == 200
+    assert "not a recognised time zone" in response.text
+    assert not CONFIG_FILE.exists()
 
 
-def test_connect_button_saves_the_form_then_redirects_to_google(client: FlaskClient) -> None:
-    reply = client.post("/settings", data={**FORM, "action": "connect"})
-    assert reply.status_code == 302
-    assert reply.headers["Location"].startswith("https://accounts.google.com/")
-    # The form was saved on the way out, so nothing is lost during the consent trip.
-    assert Settings().imap_username == "test@icloud.com"
-
-
-def test_connect_keeps_the_pkce_verifier_the_callback_must_present(
-    client: FlaskClient,
-) -> None:
-    """The auth URL carries a hashed code verifier, and the callback rebuilds the flow
-    from scratch; without the stored verifier Google answers 'Missing code verifier'."""
-    reply = client.post("/settings", data={**FORM, "action": "connect"})
-    with client.session_transaction() as session:
-        verifier = session["code_verifier"]
-
-    digest = hashlib.sha256(verifier.encode()).digest()
-    challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
-    assert f"code_challenge={challenge}" in reply.headers["Location"]
-
-
-def test_connect_from_a_remote_http_hostname_explains_instead_of_calling_google(
-    client: FlaskClient,
-) -> None:
-    """Google rejects plain-http non-loopback redirects with a cryptic policy page;
-    the portal must catch it first and say what to do."""
-    reply = client.post(
-        "/settings", data={**FORM, "action": "connect"}, base_url="http://zoloft:8484"
-    )
-    assert reply.status_code == 302
-    assert reply.headers["Location"].endswith("/settings")
-    # The form was still saved before the redirect back.
-    assert Settings().imap_username == "test@icloud.com"
-
-    follow = client.get("/settings", base_url="http://zoloft:8484")
-    assert b"ssh -L 8484:localhost:8484 zoloft" in follow.data
-
-
-def test_connect_over_remote_https_goes_to_google_with_that_redirect(
-    client: FlaskClient,
-) -> None:
-    """A registered https redirect (Web application client) is valid, so an HTTPS
-    page - e.g. behind tailscale serve - connects without any tunnel."""
-    reply = client.post(
-        "/settings",
-        data={**FORM, "action": "connect"},
-        base_url="https://zoloft.tail1234.ts.net",
-    )
-    assert reply.status_code == 302
-    location = reply.headers["Location"]
-    assert location.startswith("https://accounts.google.com/")
-    assert "redirect_uri=https%3A%2F%2Fzoloft.tail1234.ts.net%2Fgoogle%2Fcallback" in location
-
-
-def test_connect_without_a_client_id_returns_to_settings(client: FlaskClient) -> None:
-    form = {key: value for key, value in FORM.items() if not key.startswith("google_")}
-    reply = client.post("/settings", data={**form, "action": "connect"})
-    assert reply.status_code == 302
-    assert reply.headers["Location"].endswith("/settings")
+def test_settings_page_offers_timezone_suggestions(client: FlaskClient) -> None:
+    assert "Europe/Zurich" in client.get("/settings").text
 
 
 def test_unconfigured_service_redirects_home_to_settings(client: FlaskClient) -> None:
-    reply = client.get("/")
-    assert reply.status_code == 302
-    assert reply.headers["Location"].endswith("/settings")
+    response = client.get("/")
+    assert response.headers["Location"].endswith("/settings")
 
 
-def test_healthz_is_ok_while_waiting_for_configuration(
-    client: FlaskClient, supervisor: Supervisor
-) -> None:
-    reply = client.get("/healthz")
-    assert reply.status_code == 200
-    assert b"waiting" in reply.data or b"ok" in reply.data
-
-    supervisor.error = "AuthenticationFatal: iCloud rejected the credentials"
-    assert client.get("/healthz").status_code == 500
+def test_setup_is_incomplete_without_a_calendar(settings: Settings) -> None:
+    settings.calendar_name = ""
+    assert "calendar name" in missing_for_start(settings)
 
 
-def test_settings_page_renders_current_values(client: FlaskClient) -> None:
-    client.post("/settings", data=FORM)
-    page = client.get("/settings")
-    assert b"test@icloud.com" in page.data
-    assert b"Flights and hotels." in page.data
-
-
-def test_missing_for_start_accepts_dry_run_without_google(settings: Settings) -> None:
-    settings.dry_run = True
+def test_a_local_model_needs_no_api_key(settings: Settings) -> None:
+    settings.provider = "ollama"
+    settings.anthropic_api_key = ""
     assert missing_for_start(settings) == []
 
-    settings.dry_run = False
-    assert missing_for_start(settings) == ["Google authorisation"]
 
-    settings.anthropic_api_key = ""
-    assert "Anthropic API key" in missing_for_start(settings)
+def test_healthz_is_ok_while_waiting_for_configuration(client: FlaskClient) -> None:
+    response = client.get("/healthz")
+    # Nothing configured yet is a healthy container, not a crashed one.
+    assert response.status_code == 200
+    assert "waiting for configuration" in response.text
+
+
+def test_retrying_one_message_forgets_only_that_failure(client: FlaskClient) -> None:
+    client.post("/settings", data=FORM)
+    with Store(Settings().state_db) as store:
+        store.record_failure("<a@b>", "First", 3, "boom", None)
+        store.record_failure("<c@d>", "Second", 3, "boom", None)
+
+    client.post("/retry", data={"message_id": "<a@b>"})
+
+    with Store(Settings().state_db) as store:
+        assert [f.message_id for f in store.list_failures()] == ["<c@d>"]
+
+
+def test_retrying_everything_clears_them_all(client: FlaskClient) -> None:
+    client.post("/settings", data=FORM)
+    with Store(Settings().state_db) as store:
+        store.record_failure("<a@b>", "First", 3, "boom", None)
+        store.record_failure("<c@d>", "Second", 3, "boom", None)
+
+    client.post("/retry", data={})
+
+    with Store(Settings().state_db) as store:
+        assert store.list_failures() == []
+
+
+def test_the_status_page_lists_what_is_still_flagged(client: FlaskClient) -> None:
+    client.post("/settings", data=FORM)
+    with Store(Settings().state_db) as store:
+        store.record_failure("<a@b>", "Your booking", 3, "nothing to put on a calendar", None)
+
+    text = client.get("/status").text
+
+    assert "Your booking" in text
+    assert "nothing to put on a calendar" in text

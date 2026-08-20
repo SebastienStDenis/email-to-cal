@@ -2,17 +2,14 @@
 
 from __future__ import annotations
 
-import csv
-import json
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import Field, field_validator
 from pydantic_settings import (
     BaseSettings,
     JsonConfigSettingsSource,
-    NoDecode,
     PydanticBaseSettingsSource,
     SettingsConfigDict,
 )
@@ -20,35 +17,6 @@ from pydantic_settings import (
 # Written by the web portal; relative so it lands in the mounted volume in the container
 # and in ./data locally, like every other runtime file.
 CONFIG_FILE = Path("data/config.json")
-
-
-class CategoryRule(BaseModel):
-    """One rule the model matches events against, written by the operator.
-
-    An `include` rule routes what it describes to a calendar. An `exclude` rule names
-    events that never belong on any calendar, whatever else they match: the description
-    is what the model reads, so "flights, boarding passes, and seat changes" keeps air
-    travel off the calendar while trains and hotels still route normally.
-    """
-
-    name: str = Field(min_length=1)
-    description: str = Field(min_length=1)
-    # Empty for exclusions, which route nowhere.
-    calendar: str = ""
-    action: Literal["include", "exclude"] = "include"
-
-    @field_validator("name")
-    @classmethod
-    def _normalise_name(cls, value: str) -> str:
-        return value.strip().lower()
-
-    @model_validator(mode="after")
-    def _calendar_matches_action(self) -> CategoryRule:
-        if self.action == "include" and not self.calendar.strip():
-            raise ValueError(f"category {self.name!r} needs a calendar to route to")
-        if self.action == "exclude":
-            self.calendar = ""
-        return self
 
 
 class Settings(BaseSettings):
@@ -72,93 +40,44 @@ class Settings(BaseSettings):
             file_secret_settings,
         )
 
+    # One Apple ID and one app-specific password reach both the mail and the calendars.
+    apple_id: str = ""
+    apple_password: str = ""
     imap_host: str = "imap.mail.me.com"
     imap_port: int = 993
-    imap_username: str = ""
-    imap_password: str = ""
-    imap_folder: str = "INBOX"
-    # iCloud drops long-lived idle sockets well before RFC 2177's 29-minute ceiling, and
-    # imap-tools refuses anything past it outright. Zero would spin the loop at full CPU.
-    imap_idle_seconds: int = Field(default=300, ge=10, le=1740)
-    first_run_lookback_days: int = Field(default=0, ge=0)
-    # Folders to catch up on periodically, for mail filed away before IDLE saw it. New
-    # mail always lands in imap_folder first, so these need a sweep, not a second watcher.
-    # NoDecode preserves the comma-separated form an environment override uses instead of
-    # asking pydantic-settings to JSON-decode it before the validator below sees it.
-    sweep_folders: Annotated[list[str], NoDecode] = []
-    sweep_interval_minutes: int = Field(default=15, ge=1)
+    # Every folder is searched on every pass, so this is the delay between a flag going
+    # on and the event appearing. Below a minute iCloud starts refusing connections.
+    poll_interval_seconds: int = Field(default=60, ge=60)
 
+    provider: Literal["anthropic", "ollama"] = "anthropic"
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-opus-5"
     anthropic_effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
-
-    # A free local model (via Ollama) discards obvious junk before it reaches the paid
-    # API. Purely a cost optimisation: Claude still makes every real decision, and an
-    # unreachable Ollama fails open - mail goes to Claude as if the filter were off.
-    local_filter_enabled: bool = False
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "gpt-oss:20b"
     # Long emails would overflow Ollama's small default context, which silently
-    # truncates the top of the prompt - the filter instructions - first.
+    # truncates the top of the prompt - the extraction instructions - first.
     ollama_num_ctx: int = Field(default=16384, ge=2048)
     # CPU inference is slow; a short read timeout would abandon work about to finish.
     ollama_timeout_seconds: float = Field(default=600.0, gt=0)
     # Keep the model resident between emails so a burst of mail loads it once.
     ollama_keep_alive: str = "30m"
+
     enable_vision: bool = True
     # A negative value would make every attachment look oversized and silently vanish.
     max_attachment_mb: float = Field(default=8.0, gt=0)
-    min_confidence: float = Field(default=0.75, ge=0.0, le=1.0)
-    # The deterministic event id only catches the same email again; a reminder or an
-    # updated itinerary restates the same booking under a fresh Message-ID. An event
-    # this close in time with a near-identical title or the same booking reference is
-    # treated as already on the calendar. 0 switches the check off.
-    dedup_window_minutes: int = Field(default=60, ge=0)
 
-    # The OAuth client from the Google Cloud console (Desktop app type): two strings,
-    # no downloaded credentials file.
-    google_client_id: str = ""
-    google_client_secret: str = ""
-    # Relative to the working directory, so one config works both locally and in the
-    # container, where WORKDIR is /app and the volume mounts at /app/data.
-    google_token_file: Path = Path("data/token.json")
-    # Its own calendar by default, created on first run; "primary" writes to the
-    # user's main calendar instead.
-    default_calendar: str = "email-to-cal events"
+    caldav_url: str = "https://caldav.icloud.com"
+    calendar_name: str = ""
     default_timezone: str = "UTC"
 
-    # Optional phone pushes via Pushover (https://pushover.net); a no-op until both
-    # keys are configured.
+    # Both outcomes are pushed to the phone, so this is the only place a failure is
+    # reported. A no-op until both keys are configured.
     pushover_user: str = ""
     pushover_token: str = ""
-    pushover_notify_events: bool = True
-    pushover_notify_errors: bool = True
 
     state_db: Path = Path("data/state.sqlite")
-    # Safe by default: a fresh install logs what it would create until switched off.
-    dry_run: bool = True
     log_level: str = "INFO"
-
-    categories: list[CategoryRule] = []
-
-    @field_validator("categories", mode="before")
-    @classmethod
-    def _parse_categories(cls, value: Any) -> Any:
-        if isinstance(value, str):
-            stripped = value.strip()
-            return json.loads(stripped) if stripped else []
-        return value
-
-    @field_validator("sweep_folders", mode="before")
-    @classmethod
-    def _parse_sweep_folders(cls, value: Any) -> Any:
-        # Comma-separated, because iCloud folder names contain spaces ("Deleted Messages")
-        # far more often than commas. A name that does contain a comma is written
-        # CSV-style, wrapped in double quotes: "Receipts, Travel", Archive
-        if isinstance(value, str):
-            row = next(csv.reader([value], skipinitialspace=True), [])
-            return [name.strip() for name in row if name.strip()]
-        return value
 
     @field_validator("default_timezone")
     @classmethod
@@ -171,41 +90,6 @@ class Settings(BaseSettings):
             ) from exc
         return value
 
-    @model_validator(mode="after")
-    def _check_consistency(self) -> Settings:
-        seen: set[str] = set()
-        for rule in self.categories:
-            if rule.name in seen:
-                raise ValueError(f"duplicate category name {rule.name!r}")
-            seen.add(rule.name)
-
-        if self.imap_folder in self.sweep_folders:
-            raise ValueError(
-                f"swept folders must not repeat the watched folder ({self.imap_folder!r}); "
-                "it is already watched continuously"
-            )
-        return self
-
     @property
     def max_attachment_bytes(self) -> int:
         return int(self.max_attachment_mb * 1024 * 1024)
-
-    @property
-    def exclusions(self) -> list[CategoryRule]:
-        return [rule for rule in self.categories if rule.action == "exclude"]
-
-    def calendar_for(self, category: str | None) -> str:
-        """Map an extracted category name onto a calendar name, defaulting when unmatched."""
-        if category:
-            wanted = category.strip().lower()
-            for rule in self.categories:
-                if rule.action == "include" and rule.name == wanted:
-                    return rule.calendar
-        return self.default_calendar
-
-    def exclusion_named(self, name: str | None) -> CategoryRule | None:
-        """The exclusion rule the model named, or None if it named nothing recognisable."""
-        if not name:
-            return None
-        wanted = name.strip().lower()
-        return next((rule for rule in self.exclusions if rule.name == wanted), None)

@@ -85,7 +85,7 @@ class EventLocation(BaseModel):
 
 
 class ExtractedEvent(BaseModel):
-    """One calendar-worthy commitment found in an email."""
+    """One calendar entry found in a flagged email."""
 
     kind: EventKind
     title: str = Field(description="Short calendar title, e.g. 'LX318 ZRH to LHR'.")
@@ -117,24 +117,9 @@ class ExtractedEvent(BaseModel):
         default=None, description="Arrival airport IATA code, for flights only."
     )
     booking_reference: str | None = None
-    category: str | None = Field(
-        default=None, description="Exactly one of the configured category names, or null."
-    )
-    excluded_by: str | None = Field(
-        default=None,
-        description="Name of the exclusion rule that describes this event, or null. "
-        "Judged independently of category.",
-    )
-    confidence: float = Field(ge=0.0, le=1.0)
-    reasoning: str = Field(description="One sentence on why this is a real commitment.")
 
 
 class ExtractionResult(BaseModel):
-    """The model's verdict on a single email."""
+    """Every event the model found in one email."""
 
-    is_committed: bool = Field(
-        description="True only if the recipient personally booked, bought, reserved, "
-        "registered for, or was directly invited to something."
-    )
-    gate_reasoning: str = Field(description="One sentence justifying is_committed.")
     events: list[ExtractedEvent] = []

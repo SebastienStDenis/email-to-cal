@@ -1,507 +1,253 @@
+"""What happens to one flagged email, and what happens when it cannot be processed."""
+
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import anthropic
 import httpx
 import pytest
 
-from email_to_cal.app import Pipeline, _process_one
-from email_to_cal.config import CategoryRule, Settings
-from email_to_cal.local_llm import FilterVerdict, OllamaUnavailable
-from email_to_cal.mailbox import AuthenticationFatal
-from email_to_cal.schema import EmailDocument, EventLocation, ExtractedEvent, ExtractionResult
+from email_to_cal.app import RETRY_DELAYS, NoEventsFound, Pipeline, _handle
+from email_to_cal.config import Settings
+from email_to_cal.mailbox import AuthenticationFatal, FlaggedMail
+from email_to_cal.schema import EmailDocument, ExtractedEvent, ExtractionResult
 from email_to_cal.store import Store
 
 from .conftest import fixture_bytes
 
+CALENDAR_URL = "https://example.test/calendars/home/"
+
+
+def concert(title: str = "Radiohead at the O2") -> ExtractedEvent:
+    return ExtractedEvent(
+        kind="concert",
+        title=title,
+        all_day=False,
+        start_local="2026-09-14T20:00:00",
+        start_tz="Europe/London",
+    )
+
 
 class StubExtractor:
-    """Stands in for the Anthropic client; records calls so caching is observable."""
+    """Returns a canned answer, or raises one, and counts how often it was asked."""
 
-    def __init__(self, result: ExtractionResult) -> None:
+    def __init__(self, result: ExtractionResult | Exception) -> None:
         self.result = result
         self.calls = 0
 
     def extract(self, doc: EmailDocument) -> ExtractionResult:
         self.calls += 1
+        if isinstance(self.result, Exception):
+            raise self.result
         return self.result
 
 
-class FakeMailbox:
-    """Records the ack so a test can tell success from a swallowed failure."""
-
-    def __init__(self) -> None:
-        self.acks: list[tuple[int, str | None]] = []
-
-    def ack(self, uid: int, *, error: str | None = None) -> None:
-        self.acks.append((uid, error))
-
-
 class StubCalendar:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.written: list[tuple[str, bytes]] = []
+
+    def put(self, calendar_url: str, uid: str, ics: bytes) -> None:
+        assert calendar_url == CALENDAR_URL
+        if self.error is not None:
+            raise self.error
+        self.written.append((uid, ics))
+
+
+class StubMailbox:
     def __init__(self) -> None:
-        self.inserted: list[tuple[str, dict[str, Any]]] = []
-        self.urls: list[str | None] = []
-        self.existing: dict[str, Any] | None = None
-        self.lookups: list[tuple[str, str | None]] = []
+        self.unflagged: list[int] = []
 
-    def resolve_calendar(self, name: str, *, create_missing: bool = True) -> str:
-        return f"id-of-{name.lower().replace(' ', '-')}"
-
-    def find_similar(
-        self, calendar_id: str, body: dict[str, Any], *, booking_reference: str | None = None
-    ) -> dict[str, Any] | None:
-        self.lookups.append((calendar_id, booking_reference))
-        return self.existing
-
-    def insert(self, calendar_id: str, body: dict[str, Any], *, url: str | None = None) -> str:
-        self.inserted.append((calendar_id, body))
-        self.urls.append(url)
-        return str(body["id"])
+    def unflag(self, mail: FlaggedMail) -> None:
+        self.unflagged.append(mail.uid)
 
 
-def concert_event(
-    confidence: float = 0.95,
-    category: str | None = "music",
-    excluded_by: str | None = None,
-) -> ExtractedEvent:
-    return ExtractedEvent(
-        kind="concert",
-        excluded_by=excluded_by,
-        title="Radiohead at The O2",
-        location=EventLocation(name="The O2 Arena", locality="London", country="GB"),
-        all_day=False,
-        start_local="2026-11-02T19:30:00",
-        end_local="2026-11-02T22:30:00",
-        category=category,
-        confidence=confidence,
-        reasoning="Ticket order confirmed.",
-    )
+class StubNotifier:
+    def __init__(self) -> None:
+        self.created_pushes: list[tuple[list[str], str, str | None]] = []
+        self.failed_pushes: list[tuple[str, str, str | None]] = []
+
+    def created(self, events: list[str], calendar: str, link: str | None) -> None:
+        self.created_pushes.append((events, calendar, link))
+
+    def failed(self, subject: str, detail: str, link: str | None) -> None:
+        self.failed_pushes.append((subject, detail, link))
 
 
 def build(
-    settings: Settings, result: ExtractionResult
-) -> tuple[Pipeline, StubExtractor, StubCalendar, Store]:
-    store = Store(settings.state_db)
+    settings: Settings,
+    store: Store,
+    result: ExtractionResult | Exception,
+    calendar: StubCalendar | None = None,
+) -> tuple[Pipeline, StubExtractor, StubCalendar]:
     extractor = StubExtractor(result)
-    calendar = StubCalendar()
-    return Pipeline(settings, store, extractor, calendar), extractor, calendar, store
+    calendar = calendar or StubCalendar()
+    pipeline = Pipeline(settings, store, extractor, calendar, CALENDAR_URL)  # type: ignore[arg-type]
+    return pipeline, extractor, calendar
 
 
-def test_committed_email_creates_an_event_on_the_routed_calendar(settings: Settings) -> None:
-    result = ExtractionResult(
-        is_committed=True, gate_reasoning="Order confirmation.", events=[concert_event()]
-    )
-    pipeline, _, calendar, store = build(settings, result)
-
-    outcome = pipeline.process(fixture_bytes("concert_ics.eml"))
-
-    assert outcome.committed
-    assert len(calendar.inserted) == 1
-    calendar_id, body = calendar.inserted[0]
-    assert calendar_id == "id-of-music"
-    assert body["summary"] == "Radiohead at The O2"
-    assert body["start"]["timeZone"] == "Europe/London"
-    store.close()
-
-
-def test_transpacific_flight_lands_on_the_travel_calendar_in_both_zones(
+def run_handle(
     settings: Settings,
-) -> None:
-    """The headline case, from real MIME through to the exact Google payload."""
-    flight = ExtractedEvent(
-        kind="flight",
-        title="NH106 HND to LAX",
-        description="Confirmation K3TQ9P",
-        all_day=False,
-        start_local="2026-09-14T18:35:00",
-        end_local="2026-09-14T11:25:00",
-        departure_iata="HND",
-        arrival_iata="LAX",
-        booking_reference="K3TQ9P",
-        category="travel",
-        confidence=0.98,
-        reasoning="Airline booking confirmation with a reservation number.",
-    )
-    result = ExtractionResult(
-        is_committed=True, gate_reasoning="Booking confirmation.", events=[flight]
-    )
-    pipeline, _, calendar, store = build(settings, result)
-
-    pipeline.process(fixture_bytes("flight_jsonld.eml"))
-
-    calendar_id, body = calendar.inserted[0]
-    assert calendar_id == "id-of-sebastiens-travels"
-    assert body["start"] == {"dateTime": "2026-09-14T18:35:00+09:00", "timeZone": "Asia/Tokyo"}
-    assert body["end"] == {
-        "dateTime": "2026-09-14T11:25:00-07:00",
-        "timeZone": "America/Los_Angeles",
-    }
-    assert body["extendedProperties"]["private"]["e2c_msg_id"] == "<flight-k3tq9p@ana.example>"
-    store.close()
+    store: Store,
+    result: ExtractionResult | Exception,
+    calendar: StubCalendar | None = None,
+) -> tuple[StubMailbox, StubNotifier, StubExtractor]:
+    pipeline, extractor, _ = build(settings, store, result, calendar)
+    mailbox, notifier = StubMailbox(), StubNotifier()
+    mail = FlaggedMail(folder="INBOX", uid=7, raw=fixture_bytes("concert_ics.eml"))
+    _handle(settings, pipeline, mailbox, store, notifier, mail)  # type: ignore[arg-type]
+    return mailbox, notifier, extractor
 
 
-def test_marketing_email_creates_nothing(settings: Settings) -> None:
-    result = ExtractionResult(
-        is_committed=False,
-        gate_reasoning="A digest of concerts the recipient has not bought tickets for.",
-        events=[],
-    )
-    pipeline, _, calendar, store = build(settings, result)
+def test_a_flagged_email_is_written_unflagged_and_pushed(settings: Settings, tmp_path: Any) -> None:
+    with Store(settings.state_db) as store:
+        mailbox, notifier, _ = run_handle(settings, store, ExtractionResult(events=[concert()]))
 
-    outcome = pipeline.process(fixture_bytes("promo_image_heavy.eml"))
+        # The flag coming off is the signal to the human that it is done.
+        assert mailbox.unflagged == [7]
+        assert store.list_failures() == []
+        assert len(store.recent_events()) == 1
 
-    assert not outcome.committed
-    assert calendar.inserted == []
-    assert "not bought" in outcome.reason
-    store.close()
-
-
-def test_low_confidence_events_are_skipped_not_written(settings: Settings) -> None:
-    settings.min_confidence = 0.75
-    result = ExtractionResult(
-        is_committed=True,
-        gate_reasoning="Looks like a booking.",
-        events=[concert_event(confidence=0.4)],
-    )
-    pipeline, _, calendar, store = build(settings, result)
-
-    outcome = pipeline.process(fixture_bytes("concert_ics.eml"))
-
-    assert calendar.inserted == []
-    assert outcome.skipped == [("Radiohead at The O2", "confidence 0.40")]
-    store.close()
+        events, calendar, link = notifier.created_pushes[0]
+        assert events == ["Radiohead at the O2 - Mon 14 Sep 20:00"]
+        assert calendar == "Bookings"
+        # Success opens the calendar on the day, not the email it came from.
+        assert link is not None and link.startswith("calshow:")
 
 
-def test_an_excluded_event_is_dropped_while_the_rest_of_the_email_survives(
-    settings: Settings,
-) -> None:
-    settings.categories.append(
-        CategoryRule(name="flights", description="Air travel.", action="exclude")
-    )
-    flight = ExtractedEvent(
-        kind="flight",
-        title="LX318 ZRH to LHR",
-        all_day=False,
-        start_local="2026-11-02T07:15:00",
-        departure_iata="ZRH",
-        arrival_iata="LHR",
-        category="travel",
-        excluded_by="flights",
-        confidence=0.98,
-        reasoning="Airline booking confirmation.",
-    )
-    hotel = ExtractedEvent(
-        kind="hotel",
-        title="The Hoxton Shoreditch",
-        location=EventLocation(name="The Hoxton", locality="London", country="GB"),
-        all_day=False,
-        start_local="2026-11-02T15:00:00",
-        end_local="2026-11-04T11:00:00",
-        category="travel",
-        confidence=0.95,
-        reasoning="Hotel reservation confirmed.",
-    )
-    result = ExtractionResult(
-        is_committed=True, gate_reasoning="Trip confirmation.", events=[flight, hotel]
-    )
-    pipeline, _, calendar, store = build(settings, result)
+def test_every_event_in_one_email_is_written(settings: Settings) -> None:
+    with Store(settings.state_db) as store:
+        result = ExtractionResult(events=[concert("Outbound"), concert("Return")])
+        pipeline, _, calendar = build(settings, store, result)
+        doc = EmailDocument(
+            message_id="<a@b>", subject="Trip", sender="x", to="y", date=None, body_text=""
+        )
 
-    outcome = pipeline.process(fixture_bytes("flight_jsonld.eml"))
+        written = pipeline.process(doc)
 
-    assert [body["summary"] for _, body in calendar.inserted] == ["The Hoxton Shoreditch"]
-    assert outcome.skipped == [("LX318 ZRH to LHR", "excluded by 'flights'")]
-    store.close()
+        # A return flight is two events, and each gets its own resource on the server.
+        assert [built.title for built in written] == ["Outbound", "Return"]
+        assert len({uid for uid, _ in calendar.written}) == 2
 
 
-def test_an_invented_exclusion_name_does_not_lose_the_event(settings: Settings) -> None:
-    """Only a rule the operator actually wrote may drop an event."""
-    result = ExtractionResult(
-        is_committed=True,
-        gate_reasoning="Ticket order confirmed.",
-        events=[concert_event(excluded_by="stuff i dislike")],
-    )
-    pipeline, _, calendar, store = build(settings, result)
+def test_an_email_with_nothing_to_add_keeps_its_flag_and_says_so(settings: Settings) -> None:
+    with Store(settings.state_db) as store:
+        mailbox, notifier, _ = run_handle(settings, store, ExtractionResult(events=[]))
 
-    outcome = pipeline.process(fixture_bytes("concert_ics.eml"))
+        assert mailbox.unflagged == []
+        assert notifier.created_pushes == []
+        # Asking the same model the same question again would get the same answer, so
+        # the user hears about it immediately rather than after a retry cycle.
+        assert len(notifier.failed_pushes) == 1
+        _, detail, link = notifier.failed_pushes[0]
+        assert "calendar" in detail
+        assert link is not None and link.startswith("message://")
 
-    assert len(calendar.inserted) == 1
-    assert outcome.skipped == []
-    store.close()
-
-
-def test_unknown_category_falls_back_to_the_default_calendar(settings: Settings) -> None:
-    result = ExtractionResult(
-        is_committed=True,
-        gate_reasoning="Confirmed.",
-        events=[concert_event(category="gardening")],
-    )
-    pipeline, _, calendar, store = build(settings, result)
-    pipeline.process(fixture_bytes("concert_ics.eml"))
-
-    assert calendar.inserted[0][0] == "id-of-primary"
-    store.close()
+        failure = store.list_failures()[0]
+        assert failure.given_up
 
 
-def test_reprocessing_the_same_email_does_not_duplicate(settings: Settings) -> None:
-    result = ExtractionResult(
-        is_committed=True, gate_reasoning="Confirmed.", events=[concert_event()]
-    )
-    pipeline, extractor, calendar, store = build(settings, result)
-    raw = fixture_bytes("concert_ics.eml")
+def test_a_transient_failure_is_retried_quietly_before_giving_up(settings: Settings) -> None:
+    with Store(settings.state_db) as store:
+        error = httpx.ConnectError("calendar server unreachable")
+        calendar = StubCalendar(error=error)
 
-    pipeline.process(raw)
-    store.record_event(calendar.inserted[0][1]["id"], "<order-tck88213@ticketing.example>", "x")
-    pipeline.process(raw)
-
-    assert len(calendar.inserted) == 1
-    # The second pass was served from the cache rather than re-billing the model.
-    assert extractor.calls == 1
-    store.close()
-
-
-def test_already_seen_messages_short_circuit_before_the_model(settings: Settings) -> None:
-    """What protects us after a UIDVALIDITY resync re-offers the whole folder."""
-    result = ExtractionResult(
-        is_committed=True, gate_reasoning="Confirmed.", events=[concert_event()]
-    )
-    pipeline, extractor, calendar, store = build(settings, result)
-    raw = fixture_bytes("concert_ics.eml")
-
-    pipeline.process(raw)
-    store.mark_seen("<order-tck88213@ticketing.example>")
-    second = pipeline.process(raw)
-
-    assert second.reason == "already processed"
-    assert extractor.calls == 1
-    assert len(calendar.inserted) == 1
-
-    # replay deliberately opts out of the seen-check so it stays useful for debugging,
-    # and the deterministic event id still stops it double-booking anything.
-    replayed = pipeline.process(raw, skip_seen=False)
-    assert replayed.committed
-    assert replayed.reason == "Confirmed."
-    assert len(calendar.inserted) == 1
-    store.close()
-
-
-def test_a_similar_event_already_on_the_calendar_is_not_recreated(settings: Settings) -> None:
-    """A reminder email restates the booking under a new Message-ID; the calendar
-    lookup, not the deterministic id, is what stops the second copy."""
-    result = ExtractionResult(
-        is_committed=True, gate_reasoning="Confirmed.", events=[concert_event()]
-    )
-    pipeline, _, calendar, store = build(settings, result)
-    calendar.existing = {"id": "abc123", "summary": "Radiohead - The O2"}
-
-    outcome = pipeline.process(fixture_bytes("concert_ics.eml"))
-
-    assert calendar.inserted == []
-    assert outcome.skipped == [
-        ("Radiohead at The O2", "already on calendar as 'Radiohead - The O2'")
-    ]
-    store.close()
-
-
-def test_zero_dedup_window_skips_the_calendar_lookup(settings: Settings) -> None:
-    settings.dedup_window_minutes = 0
-    result = ExtractionResult(
-        is_committed=True, gate_reasoning="Confirmed.", events=[concert_event()]
-    )
-    pipeline, _, calendar, store = build(settings, result)
-    calendar.existing = {"id": "abc123", "summary": "Radiohead - The O2"}
-
-    pipeline.process(fixture_bytes("concert_ics.eml"))
-
-    assert calendar.lookups == []
-    assert len(calendar.inserted) == 1
-    store.close()
-
-
-def test_dry_run_writes_nothing(settings: Settings) -> None:
-    settings.dry_run = True
-    result = ExtractionResult(
-        is_committed=True, gate_reasoning="Confirmed.", events=[concert_event()]
-    )
-    pipeline, _, calendar, store = build(settings, result)
-
-    outcome = pipeline.process(fixture_bytes("concert_ics.eml"))
-
-    assert calendar.inserted == []
-    assert outcome.created == [("Music", "Radiohead at The O2")]
-    store.close()
-
-
-def test_created_events_notify_the_phone_but_dry_runs_do_not(
-    settings: Settings, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    pushes: list[dict[str, Any]] = []
-
-    def record(url: str, *, data: dict[str, Any], timeout: float) -> httpx.Response:
-        pushes.append(data)
-        return httpx.Response(200, request=httpx.Request("POST", url))
-
-    monkeypatch.setattr("email_to_cal.notify.httpx.post", record)
-    settings.pushover_user = "u123"
-    settings.pushover_token = "a456"
-    result = ExtractionResult(
-        is_committed=True, gate_reasoning="Confirmed.", events=[concert_event()]
-    )
-    pipeline, _, _, store = build(settings, result)
-
-    pipeline.process(fixture_bytes("concert_ics.eml"))
-    assert [push["message"] for push in pushes] == ["Radiohead at The O2 on Music"]
-    assert pushes[0]["url"].startswith("calshow:")
-
-    settings.dry_run = True
-    pipeline.process(fixture_bytes("concert_ics.eml"), skip_seen=False)
-    assert len(pushes) == 1
-    store.close()
-
-
-def test_bad_api_key_stops_the_service_instead_of_dropping_mail(settings: Settings) -> None:
-    """A per-message catch would silently bin every email until someone noticed."""
-
-    class RejectingExtractor(StubExtractor):
-        def extract(self, doc: EmailDocument) -> ExtractionResult:
-            raise anthropic.AuthenticationError(
-                "invalid x-api-key",
-                response=httpx.Response(401, request=httpx.Request("POST", "https://x")),
-                body=None,
+        for attempt in range(len(RETRY_DELAYS)):
+            mailbox, notifier, _ = run_handle(
+                settings, store, ExtractionResult(events=[concert()]), calendar
+            )
+            assert mailbox.unflagged == []
+            # A network blip that fixes itself should never reach the phone.
+            assert notifier.failed_pushes == []
+            failure = store.list_failures()[0]
+            assert failure.attempts == attempt + 1
+            assert not failure.given_up
+            # The retry is due later, so the next pass has to leave it alone.
+            store.record_failure(
+                failure.message_id, failure.subject, failure.attempts, failure.detail, 0.0
             )
 
-    store = Store(settings.state_db)
-    pipeline = Pipeline(
-        settings,
-        store,
-        RejectingExtractor(ExtractionResult(is_committed=False, gate_reasoning="")),
-        StubCalendar(),
-    )
-
-    with pytest.raises(AuthenticationFatal):
-        _process_one(pipeline, FakeMailbox(), store, 1, fixture_bytes("concert_ics.eml"))
-    store.close()
+        mailbox, notifier, _ = run_handle(
+            settings, store, ExtractionResult(events=[concert()]), calendar
+        )
+        assert len(notifier.failed_pushes) == 1
+        assert store.list_failures()[0].given_up
 
 
-def test_ordinary_failures_do_not_stop_the_service(settings: Settings) -> None:
-    class BrokenExtractor(StubExtractor):
-        def extract(self, doc: EmailDocument) -> ExtractionResult:
-            raise ValueError("model returned nonsense")
+def test_a_message_waiting_for_its_retry_is_left_alone(settings: Settings) -> None:
+    with Store(settings.state_db) as store:
+        doc_id = "<order-tck88213@ticketing.example>"
+        store.record_failure(doc_id, "Concert", 1, "boom", time.time() + 3600)
 
-    store = Store(settings.state_db)
-    pipeline = Pipeline(
-        settings,
-        store,
-        BrokenExtractor(ExtractionResult(is_committed=False, gate_reasoning="")),
-        StubCalendar(),
-    )
+        _, notifier, extractor = run_handle(settings, store, ExtractionResult(events=[concert()]))
 
-    _process_one(
-        pipeline, FakeMailbox(), store, 1, fixture_bytes("concert_ics.eml")
-    )  # must not raise
-    store.close()
+        # Retrying every pass would re-run the model every minute, forever.
+        assert extractor.calls == 0
+        assert notifier.created_pushes == []
 
 
-class FakeFilter:
-    """A prefilter with a scripted verdict, counting how often it is consulted."""
+def test_a_message_given_up_on_is_never_tried_again(settings: Settings) -> None:
+    with Store(settings.state_db) as store:
+        doc_id = "<order-tck88213@ticketing.example>"
+        store.record_failure(doc_id, "Concert", 3, "boom", None)
 
-    def __init__(self, passes: bool = True, error: Exception | None = None) -> None:
-        self.passes = passes
-        self.error = error
-        self.calls = 0
+        _, _, extractor = run_handle(settings, store, ExtractionResult(events=[concert()]))
 
-    def judge(self, doc: EmailDocument) -> FilterVerdict:
-        self.calls += 1
-        if self.error is not None:
-            raise self.error
-        return FilterVerdict(could_contain_commitment=self.passes, reasoning="scripted")
+        assert extractor.calls == 0
 
 
-def build_filtered(
-    settings: Settings, result: ExtractionResult, prefilter: FakeFilter
-) -> tuple[Pipeline, StubExtractor, Store]:
-    store = Store(settings.state_db)
-    extractor = StubExtractor(result)
-    pipeline = Pipeline(settings, store, extractor, StubCalendar(), prefilter=prefilter)  # type: ignore[arg-type]
-    return pipeline, extractor, store
+def test_clearing_the_failure_lets_it_run_again(settings: Settings) -> None:
+    with Store(settings.state_db) as store:
+        doc_id = "<order-tck88213@ticketing.example>"
+        store.record_failure(doc_id, "Concert", 3, "boom", None)
+        store.clear_failure(doc_id)
+
+        mailbox, _, extractor = run_handle(settings, store, ExtractionResult(events=[concert()]))
+
+        assert extractor.calls == 1
+        assert mailbox.unflagged == [7]
 
 
-def committed_result() -> ExtractionResult:
-    return ExtractionResult(
-        is_committed=True, gate_reasoning="Confirmed.", events=[concert_event()]
-    )
+def test_a_recovered_message_forgets_it_ever_failed(settings: Settings) -> None:
+    with Store(settings.state_db) as store:
+        doc_id = "<order-tck88213@ticketing.example>"
+        store.record_failure(doc_id, "Concert", 1, "boom", 0.0)
+
+        run_handle(settings, store, ExtractionResult(events=[concert()]))
+
+        assert store.list_failures() == []
 
 
-def test_filtered_junk_never_reaches_the_paid_model(settings: Settings) -> None:
-    prefilter = FakeFilter(passes=False)
-    pipeline, extractor, store = build_filtered(settings, committed_result(), prefilter)
+def test_a_rejected_api_key_stops_the_service_instead_of_burning_the_flag(
+    settings: Settings,
+) -> None:
+    with Store(settings.state_db) as store:
+        error = anthropic.AuthenticationError(
+            "bad key", response=httpx.Response(401, request=httpx.Request("POST", "/")), body=None
+        )
+        pipeline, _, _ = build(settings, store, error)
+        mailbox, notifier = StubMailbox(), StubNotifier()
+        mail = FlaggedMail(folder="INBOX", uid=7, raw=fixture_bytes("concert_ics.eml"))
 
-    outcome = pipeline.process(fixture_bytes("promo_image_heavy.eml"))
+        # Recording this as a per-message failure would quietly write off every flagged
+        # email until someone noticed the key was dead.
+        with pytest.raises(AuthenticationFatal):
+            _handle(settings, pipeline, mailbox, store, notifier, mail)  # type: ignore[arg-type]
 
-    assert not outcome.committed
-    assert outcome.reason == "filtered locally: scripted"
-    assert extractor.calls == 0
-    store.close()
-
-
-def test_a_passing_verdict_hands_the_email_to_the_extractor(settings: Settings) -> None:
-    prefilter = FakeFilter(passes=True)
-    pipeline, extractor, store = build_filtered(settings, committed_result(), prefilter)
-
-    outcome = pipeline.process(fixture_bytes("restaurant_plain.eml"))
-
-    assert outcome.committed
-    assert prefilter.calls == 1
-    assert extractor.calls == 1
-    store.close()
+        assert store.list_failures() == []
+        assert mailbox.unflagged == []
 
 
-def test_structured_emails_bypass_the_filter(settings: Settings) -> None:
-    """A .ics ticket goes straight to Claude; the cheap model gets no veto over it."""
-    prefilter = FakeFilter(passes=False)  # would wrongly discard, so it must not be asked
-    pipeline, extractor, store = build_filtered(settings, committed_result(), prefilter)
+def test_process_raises_rather_than_writing_an_empty_answer(settings: Settings) -> None:
+    with Store(settings.state_db) as store:
+        pipeline, _, calendar = build(settings, store, ExtractionResult(events=[]))
+        doc = EmailDocument(
+            message_id="<a@b>", subject="Newsletter", sender="x", to="y", date=None, body_text=""
+        )
 
-    outcome = pipeline.process(fixture_bytes("concert_ics.eml"))
+        with pytest.raises(NoEventsFound):
+            pipeline.process(doc)
 
-    assert outcome.committed
-    assert prefilter.calls == 0
-    assert extractor.calls == 1
-    store.close()
-
-
-def test_an_unreachable_filter_fails_open_to_the_paid_model(settings: Settings) -> None:
-    """The filter is a cost optimisation; an Ollama outage must never drop mail."""
-    prefilter = FakeFilter(error=OllamaUnavailable("connection refused"))
-    pipeline, extractor, store = build_filtered(settings, committed_result(), prefilter)
-
-    outcome = pipeline.process(fixture_bytes("restaurant_plain.eml"))
-
-    assert outcome.committed
-    assert extractor.calls == 1
-    store.close()
-
-
-def test_filter_verdicts_are_cached(settings: Settings) -> None:
-    prefilter = FakeFilter(passes=False)
-    pipeline, extractor, store = build_filtered(settings, committed_result(), prefilter)
-    raw = fixture_bytes("promo_image_heavy.eml")
-
-    pipeline.process(raw, skip_seen=False)
-    pipeline.process(raw, skip_seen=False)
-
-    assert prefilter.calls == 1
-    assert extractor.calls == 0
-    store.close()
-
-
-def test_calendar_routing_is_case_insensitive() -> None:
-    settings = Settings(
-        categories=[
-            CategoryRule(name="Travel", description="Flights.", calendar="Sebastiens Travels")
-        ],
-        default_calendar="primary",
-    )
-    assert settings.calendar_for("TRAVEL") == "Sebastiens Travels"
-    assert settings.calendar_for("travel") == "Sebastiens Travels"
-    assert settings.calendar_for("music") == "primary"
-    assert settings.calendar_for(None) == "primary"
+        assert calendar.written == []
