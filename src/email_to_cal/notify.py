@@ -57,7 +57,7 @@ class Notifier:
         }
         if url and len(url) <= MAX_URL_LENGTH:
             data["url"] = url
-            data["url_title"] = "Open in calendar"
+            data["url_title"] = "Open in Calendar"
         try:
             response = httpx.post(MESSAGES_URL, data=data, timeout=10)
             response.raise_for_status()

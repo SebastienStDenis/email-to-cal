@@ -58,13 +58,11 @@ def test_created_events_carry_a_tappable_link_to_the_event(
     post = RecordingPost()
     monkeypatch.setattr("email_to_cal.notify.httpx.post", post)
 
-    Notifier(configured()).created(
-        "Radiohead at The O2", "Music", url="https://www.google.com/calendar/event?eid=abc"
-    )
+    Notifier(configured()).created("Radiohead at The O2", "Music", url="calshow:751201200")
 
     (call,) = post.calls
-    assert call["url"] == "https://www.google.com/calendar/event?eid=abc"
-    assert call["url_title"] == "Open in calendar"
+    assert call["url"] == "calshow:751201200"
+    assert call["url_title"] == "Open in Calendar"
 
 
 def test_an_oversized_link_is_dropped_so_the_push_still_arrives(
@@ -73,7 +71,7 @@ def test_an_oversized_link_is_dropped_so_the_push_still_arrives(
     post = RecordingPost()
     monkeypatch.setattr("email_to_cal.notify.httpx.post", post)
 
-    Notifier(configured()).created("Radiohead at The O2", "Music", url="https://x/" + "y" * 512)
+    Notifier(configured()).created("Radiohead at The O2", "Music", url="calshow:" + "9" * 512)
 
     (call,) = post.calls
     assert "url" not in call

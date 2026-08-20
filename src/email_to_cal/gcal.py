@@ -149,6 +149,28 @@ def mail_link(message_id: str) -> str | None:
     return "message://" + quote(message_id, safe="@")
 
 
+# Apple counts from 2001, not 1970.
+_APPLE_EPOCH = datetime(2001, 1, 1, tzinfo=UTC)
+
+
+def calendar_link(body: dict[str, Any], *, default_timezone: str) -> str:
+    """A link that opens the iOS Calendar app on the event's day.
+
+    Apple offers no scheme for one specific event, only calshow, which takes an instant
+    the phone then renders in whatever zone it is currently in. Aiming at noon keeps the
+    date right even when the phone is a good half-day away from the event.
+    """
+    start = body["start"]
+    if "date" in start:
+        day = date.fromisoformat(start["date"])
+        zone = default_timezone
+    else:
+        day = datetime.fromisoformat(start["dateTime"]).date()
+        zone = start["timeZone"]
+    noon = localise(datetime(day.year, day.month, day.day, 12), zone)
+    return f"calshow:{int((noon - _APPLE_EPOCH).total_seconds())}"
+
+
 def build_event_body(
     event: ExtractedEvent,
     settings: Settings,
@@ -332,18 +354,15 @@ class CalendarClient:
             if not page_token:
                 return None
 
-    def insert(self, calendar_id: str, body: dict[str, Any]) -> dict[str, Any]:
-        """Insert an event and return the stored resource, treating an existing id as
-        success."""
+    def insert(self, calendar_id: str, body: dict[str, Any]) -> str:
+        """Insert an event, treating an existing id as success."""
         try:
-            created: dict[str, Any] = self._retry(
-                self._service.events().insert(calendarId=calendar_id, body=body)
-            )
-            return created
+            created = self._retry(self._service.events().insert(calendarId=calendar_id, body=body))
+            return str(created["id"])
         except HttpError as exc:
             if exc.resp.status == 409:
                 log.info("event %s already exists on %s", body["id"], calendar_id)
-                return {"id": body["id"]}
+                return str(body["id"])
             raise
 
     def _retry(self, request: Any, attempts: int = 5) -> dict[str, Any]:

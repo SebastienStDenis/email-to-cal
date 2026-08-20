@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 import anthropic
 
 from .config import Settings
-from .gcal import CalendarClient, CredentialsExpired, build_event_body
+from .gcal import CalendarClient, CredentialsExpired, build_event_body, calendar_link
 from .llm import Extractor, cache_key
 from .local_llm import FilterVerdict, OllamaFilter, filter_cache_key, make_prefilter
 from .mailbox import AuthenticationFatal, Mailbox, sleep_with_backoff
@@ -178,12 +178,15 @@ class Pipeline:
                 )
                 return
 
-        created = self._calendar.insert(calendar_id, body)
-        event_id = str(created["id"])
+        event_id = self._calendar.insert(calendar_id, body)
         self._store.record_event(event_id, doc.message_id, calendar_id, event.title)
         log.info("created %r on %r (%s)", event.title, calendar_name, event_id)
         outcome.created.append((calendar_name, event.title))
-        self.notifier.created(event.title, calendar_name, url=created.get("htmlLink"))
+        self.notifier.created(
+            event.title,
+            calendar_name,
+            url=calendar_link(body, default_timezone=settings.default_timezone),
+        )
 
 
 def run(settings: Settings, stopping: threading.Event) -> None:

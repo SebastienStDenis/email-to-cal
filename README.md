@@ -288,8 +288,7 @@ Optional pushes through [Pushover](https://pushover.net). Register an applicatio
 this service at [pushover.net/apps/build](https://pushover.net/apps/build), then enter
 its API token and your user key in the portal.
 
-A created-event push carries a link to the event itself, so tapping it opens the event
-in Google Calendar.
+A created-event push carries a link that opens the iOS Calendar app on the event's day.
 
 Notifications are sent at the priority they deserve: created events arrive silently,
 per-message failures arrive as a normal push, and anything that stops the service - an

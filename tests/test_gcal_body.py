@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 from email_to_cal.config import Settings
-from email_to_cal.gcal import build_event_body, event_id_for
+from email_to_cal.gcal import build_event_body, calendar_link, event_id_for
 from email_to_cal.schema import EventLocation, ExtractedEvent
 
 GOOGLE_ID_CHARSET = re.compile(r"^[a-v0-9]{5,1024}$")
@@ -136,3 +136,27 @@ def test_unresolvable_location_uses_the_configured_default(settings: Settings) -
     )
     body = build_event_body(event, settings, message_id="<a@b>")
     assert body["start"]["timeZone"] == "Europe/Zurich"
+
+
+def test_calendar_link_opens_the_ios_calendar_on_the_event_day(settings: Settings) -> None:
+    event = flight()
+    event.start_local = "2026-11-02T19:30:00"
+    event.end_local = "2026-11-02T22:30:00"
+    event.departure_iata = None
+    event.arrival_iata = None
+    event.start_tz = "Europe/London"
+    body = build_event_body(event, settings, message_id="<a@b>")
+
+    # Noon on 2 November 2026 in London, counted from Apple's 2001 epoch.
+    assert calendar_link(body, default_timezone=settings.default_timezone) == "calshow:815313600"
+
+
+def test_all_day_events_link_through_the_default_timezone(settings: Settings) -> None:
+    event = flight()
+    event.all_day = True
+    event.start_local = "2026-08-22"
+    event.end_local = None
+    body = build_event_body(event, settings, message_id="<a@b>")
+
+    # Noon on 22 August 2026 in Zurich, the configured default.
+    assert calendar_link(body, default_timezone=settings.default_timezone) == "calshow:809085600"
