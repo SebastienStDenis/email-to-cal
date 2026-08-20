@@ -137,21 +137,6 @@
         <p class="hint">0 to 1. Less certain events are skipped. Raise it if junk shows
           up; lower it if real bookings are missed.</p>
       </div>
-      <div class="wide">
-        <label>Never add</label>
-        <div class="kinds">
-          {% for kind in event_kinds %}
-          <div class="switch">
-            <input type="checkbox" id="exclude_{{ kind }}" name="excluded_kind"
-                   value="{{ kind }}"
-                   {% if kind in values.excluded_kinds %}checked{% endif %}>
-            <label for="exclude_{{ kind }}">{{ kind }}</label>
-          </div>
-          {% endfor %}
-        </div>
-        <p class="hint">Events of these kinds are dropped whatever category they fall in.
-          Ticking <strong>flight</strong> still leaves trains and hotels.</p>
-      </div>
       <div class="switch wide">
         <input type="checkbox" id="local_filter_enabled" name="local_filter_enabled"
                {% if values.local_filter_enabled %}checked{% endif %}>
@@ -307,17 +292,25 @@
     </div>
     <div style="margin-top: 1.1rem;">
       <label>Categories</label>
-      <p class="hint" style="margin: 0 0 .6rem;">Route kinds of events to their own
-        calendars. The description tells the AI what belongs: say what counts and
-        what does not.</p>
+      <p class="hint" style="margin: 0 0 .6rem;">Route events to their own calendars, or
+        keep them off the calendar entirely. The description tells the AI what the rule
+        covers: say what counts and what does not. An excluded event is dropped even when
+        it also matches a category, so <em>never add</em> for flights leaves the trains
+        and hotels of the same trip on your travel calendar.</p>
       <div id="categories">
         {% for category in values.categories %}
         <div class="category-row">
           <input type="text" name="category_name" value="{{ category.name }}"
                  placeholder="Name" aria-label="Category name">
           <input type="text" name="category_description" value="{{ category.description }}"
-                 placeholder="What belongs here, e.g. concerts and gigs I have tickets for"
-                 aria-label="Category description">
+                 placeholder="What this rule covers, e.g. gigs I have tickets for"
+                 aria-label="What the rule covers">
+          <select name="category_action" aria-label="What to do with matching events">
+            <option value="include"
+                    {% if category.action != 'exclude' %}selected{% endif %}>Add to</option>
+            <option value="exclude"
+                    {% if category.action == 'exclude' %}selected{% endif %}>Never add</option>
+          </select>
           <input type="text" name="category_calendar" value="{{ category.calendar }}"
                  placeholder="Calendar" aria-label="Calendar name">
           <button type="button" class="btn-ghost btn-sm"
@@ -405,8 +398,12 @@
   <div class="category-row">
     <input type="text" name="category_name" placeholder="Name" aria-label="Category name">
     <input type="text" name="category_description"
-           placeholder="What belongs here, e.g. concerts and gigs I have tickets for"
-           aria-label="Category description">
+           placeholder="What this rule covers, e.g. gigs I have tickets for"
+           aria-label="What the rule covers">
+    <select name="category_action" aria-label="What to do with matching events">
+      <option value="include">Add to</option>
+      <option value="exclude">Never add</option>
+    </select>
     <input type="text" name="category_calendar" placeholder="Calendar"
            aria-label="Calendar name">
     <button type="button" class="btn-ghost btn-sm"
@@ -414,9 +411,24 @@
   </div>
 </template>
 <script>
+  const categories = document.getElementById('categories');
+
+  function syncRow(row) {
+    const calendar = row.querySelector('[name=category_calendar]');
+    const excluded = row.querySelector('[name=category_action]').value === 'exclude';
+    calendar.readOnly = excluded;
+    calendar.placeholder = excluded ? 'no calendar' : 'Calendar';
+    if (excluded) calendar.value = '';
+  }
+
+  categories.addEventListener('change', (event) => {
+    if (event.target.name === 'category_action') syncRow(event.target.closest('.category-row'));
+  });
+  categories.querySelectorAll('.category-row').forEach(syncRow);
+
   document.getElementById('add-category').addEventListener('click', () => {
     const template = document.getElementById('category-template');
-    document.getElementById('categories').append(template.content.cloneNode(true));
+    categories.append(template.content.cloneNode(true));
   });
 
   const sweepInput = document.getElementById('sweep-add');

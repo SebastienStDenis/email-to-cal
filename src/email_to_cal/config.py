@@ -17,24 +17,38 @@ from pydantic_settings import (
     SettingsConfigDict,
 )
 
-from .schema import EventKind
-
 # Written by the web portal; relative so it lands in the mounted volume in the container
 # and in ./data locally, like every other runtime file.
 CONFIG_FILE = Path("data/config.json")
 
 
 class CategoryRule(BaseModel):
-    """One (category, description, calendar) triple from the operator's config."""
+    """One rule the model matches events against, written by the operator.
+
+    An `include` rule routes what it describes to a calendar. An `exclude` rule names
+    events that never belong on any calendar, whatever else they match: the description
+    is what the model reads, so "flights, boarding passes, and seat changes" keeps air
+    travel off the calendar while trains and hotels still route normally.
+    """
 
     name: str = Field(min_length=1)
     description: str = Field(min_length=1)
-    calendar: str = Field(min_length=1)
+    # Empty for exclusions, which route nowhere.
+    calendar: str = ""
+    action: Literal["include", "exclude"] = "include"
 
     @field_validator("name")
     @classmethod
     def _normalise_name(cls, value: str) -> str:
         return value.strip().lower()
+
+    @model_validator(mode="after")
+    def _calendar_matches_action(self) -> CategoryRule:
+        if self.action == "include" and not self.calendar.strip():
+            raise ValueError(f"category {self.name!r} needs a calendar to route to")
+        if self.action == "exclude":
+            self.calendar = ""
+        return self
 
 
 class Settings(BaseSettings):
@@ -95,10 +109,6 @@ class Settings(BaseSettings):
     # A negative value would make every attachment look oversized and silently vanish.
     max_attachment_mb: float = Field(default=8.0, gt=0)
     min_confidence: float = Field(default=0.75, ge=0.0, le=1.0)
-    # Kinds of event that never belong on the calendar, whatever category they fall in.
-    # Dropped after extraction rather than asked for in the prompt, so the model's
-    # cached verdicts survive a change of mind here.
-    excluded_kinds: list[EventKind] = []
     # The deterministic event id only catches the same email again; a reminder or an
     # updated itinerary restates the same booking under a fresh Message-ID. An event
     # this close in time with a near-identical title or the same booking reference is
@@ -180,11 +190,22 @@ class Settings(BaseSettings):
     def max_attachment_bytes(self) -> int:
         return int(self.max_attachment_mb * 1024 * 1024)
 
+    @property
+    def exclusions(self) -> list[CategoryRule]:
+        return [rule for rule in self.categories if rule.action == "exclude"]
+
     def calendar_for(self, category: str | None) -> str:
         """Map an extracted category name onto a calendar name, defaulting when unmatched."""
         if category:
             wanted = category.strip().lower()
             for rule in self.categories:
-                if rule.name == wanted:
+                if rule.action == "include" and rule.name == wanted:
                     return rule.calendar
         return self.default_calendar
+
+    def exclusion_named(self, name: str | None) -> CategoryRule | None:
+        """The exclusion rule the model named, or None if it named nothing recognisable."""
+        if not name:
+            return None
+        wanted = name.strip().lower()
+        return next((rule for rule in self.exclusions if rule.name == wanted), None)
