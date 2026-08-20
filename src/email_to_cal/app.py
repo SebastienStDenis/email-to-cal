@@ -98,10 +98,15 @@ class Pipeline:
             return outcome
 
         for event in result.events:
-            if event.kind in settings.excluded_kinds:
-                log.info("skipping excluded %s event %r", event.kind, event.title)
-                outcome.skipped.append((event.title, f"{event.kind} events are excluded"))
+            exclusion = settings.exclusion_named(event.excluded_by)
+            if exclusion is not None:
+                log.info("skipping %r: excluded by %r", event.title, exclusion.name)
+                outcome.skipped.append((event.title, f"excluded by {exclusion.name!r}"))
                 continue
+            if event.excluded_by:
+                # A name matching no configured rule is the model inventing one; routing
+                # it normally beats silently losing an event to a typo.
+                log.warning("ignoring unknown exclusion %r on %r", event.excluded_by, event.title)
             if event.confidence < settings.min_confidence:
                 log.info(
                     "skipping low-confidence event %r (%.2f < %.2f): %s",
@@ -286,7 +291,9 @@ def _sweep(
 
 def _bootstrap_calendars(settings: Settings, calendar: CalendarClient) -> None:
     """Resolve or create every configured calendar once, before any mail is handled."""
-    wanted = {settings.default_calendar} | {rule.calendar for rule in settings.categories}
+    wanted = {settings.default_calendar} | {
+        rule.calendar for rule in settings.categories if rule.action == "include"
+    }
     for name in sorted(wanted):
         calendar_id = calendar.resolve_calendar(name)
         log.info("calendar %r -> %s", name, calendar_id)

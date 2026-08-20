@@ -28,6 +28,7 @@ FORM = {
     "category_name": ["travel"],
     "category_description": ["Flights and hotels."],
     "category_calendar": ["Travels"],
+    "category_action": ["include"],
 }
 
 
@@ -77,13 +78,31 @@ def test_settings_page_offers_timezone_suggestions(client: FlaskClient) -> None:
     assert b"Europe/Zurich" in page.data
 
 
-def test_excluded_kinds_round_trip_through_the_form(client: FlaskClient) -> None:
-    client.post("/settings", data={**FORM, "excluded_kind": ["flight"]})
-    assert Settings().excluded_kinds == ["flight"]
+def test_an_exclusion_row_round_trips_without_a_calendar(client: FlaskClient) -> None:
+    form = {
+        **FORM,
+        "category_name": ["travel", "flights"],
+        "category_description": ["Trains and hotels.", "Air travel."],
+        "category_calendar": ["Travels", ""],
+        "category_action": ["include", "exclude"],
+    }
+    client.post("/settings", data=form)
+
+    rules = Settings().categories
+    assert [(rule.name, rule.action, rule.calendar) for rule in rules] == [
+        ("travel", "include", "Travels"),
+        ("flights", "exclude", ""),
+    ]
 
     page = client.get("/settings")
-    checkbox = re.search(rb'<input[^>]*value="flight"[^>]*>', page.data)
-    assert checkbox is not None and b"checked" in checkbox.group()
+    assert re.search(rb'value="exclude"\s*\n?\s*selected', page.data) is not None
+
+
+def test_a_routing_category_without_a_calendar_is_rejected(client: FlaskClient) -> None:
+    reply = client.post("/settings", data={**FORM, "category_calendar": [""]})
+    assert reply.status_code == 200
+    assert b"needs a calendar to route to" in reply.data
+    assert not Path(CONFIG_FILE).exists()
 
 
 def test_unchecked_checkboxes_come_back_false(client: FlaskClient) -> None:

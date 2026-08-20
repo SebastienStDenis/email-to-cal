@@ -184,16 +184,23 @@ Message-ID.
 
 ## Categories
 
-Each category is a `(name, description, calendar)` row in the portal:
+Each row in the portal is a rule the model matches events against - either **add to** a
+calendar, or **never add**:
 
-| Name | Description | Calendar |
-| --- | --- | --- |
-| travel | Flights, trains, ferries, and hotel stays. Anything involving getting to or staying somewhere away from home. | Sebastiens Travels |
-| music | Concerts, gigs, festivals, and club nights the recipient has tickets for. | Music |
+| Name | Description | Action | Calendar |
+| --- | --- | --- | --- |
+| travel | Flights, trains, ferries, and hotel stays. Anything involving getting to or staying somewhere away from home. | Add to | Sebastiens Travels |
+| music | Concerts, gigs, festivals, and club nights the recipient has tickets for. | Add to | Music |
+| flights | Air travel: flights, boarding passes, seat changes, and check-in reminders. | Never add | |
 
 The description is what the model matches an event against, so write it for the model:
 say what belongs *and* what does not. Anything that matches no category goes to the
 default calendar. Calendars that do not exist yet are created on first run.
+
+An event matching a **never add** rule is dropped whatever else it matches, and the
+reason is logged. The row above keeps flights off every calendar while the trains and
+hotels of the same trip still land on the travel one. Write these the way you write a
+category - in your own words, as broad or as narrow as you want.
 
 ## Commands
 
@@ -218,16 +225,12 @@ uv run email-to-cal replay samples/weird.eml --dry-run
 
 ## Tuning the gate
 
-Three settings control how eager the service is:
+Two settings control how eager the service is:
 
 - **Minimum confidence** (default `0.75`) - events below this are logged with the reason
   and dropped. Raise it if you get junk, lower it if real bookings are being missed.
 - **Effort** (default `medium`) - how hard the model thinks. `high` catches more awkward
   emails at higher cost.
-- **Never add** (default: nothing) - kinds of event that are dropped whatever category
-  they match: flight, train, hotel, concert, restaurant, appointment, other. Ticking
-  *flight* keeps flights off every calendar while trains and hotels still land on the
-  travel one.
 
 Model responses are cached in the state database keyed by content, so replays and
 restarts never re-bill you for the same email.

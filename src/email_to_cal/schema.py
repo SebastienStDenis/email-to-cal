@@ -120,6 +120,11 @@ class ExtractedEvent(BaseModel):
     category: str | None = Field(
         default=None, description="Exactly one of the configured category names, or null."
     )
+    excluded_by: str | None = Field(
+        default=None,
+        description="Name of the exclusion rule that describes this event, or null. "
+        "Judged independently of category.",
+    )
     confidence: float = Field(ge=0.0, le=1.0)
     reasoning: str = Field(description="One sentence on why this is a real commitment.")
 

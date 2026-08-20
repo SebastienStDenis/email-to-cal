@@ -117,7 +117,6 @@
   .switch { display: flex; align-items: flex-start; gap: .6rem; }
   .switch input { margin-top: .2rem; accent-color: var(--primary); width: 1rem; height: 1rem; }
   .switch label { margin: 0; }
-  .kinds { display: flex; flex-wrap: wrap; gap: .5rem 1.1rem; }
 
   /* Buttons */
   button, .btn {
@@ -194,9 +193,10 @@
 
   /* Category rows */
   .category-row {
-    display: grid; grid-template-columns: 8.5rem 1fr 8.5rem auto; gap: .5rem;
+    display: grid; grid-template-columns: 8.5rem 1fr 7rem 8.5rem auto; gap: .5rem;
     margin-bottom: .5rem; align-items: start;
   }
+  .category-row input[readonly] { opacity: .45; cursor: not-allowed; }
 
   /* Timezone autocomplete */
   .autocomplete { position: relative; }
