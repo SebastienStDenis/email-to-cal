@@ -22,7 +22,7 @@ class CheckResult:
 
 
 def run_checks(settings: Settings) -> list[CheckResult]:
-    """Validate the state db, IMAP login, the Anthropic key, and the Google calendars.
+    """Validate the state db, IMAP login, the Anthropic key, and both calendar APIs.
 
     Safe to run against production: nothing is written except configured calendars that
     do not exist yet.
@@ -75,14 +75,30 @@ def run_checks(settings: Settings) -> list[CheckResult]:
         try:
             calendar = CalendarClient(settings, store)
             wanted = {settings.default_calendar} | {r.calendar for r in settings.categories}
-            resolved = ", ".join(
-                f"{name!r} -> {calendar.resolve_calendar(name)}" for name in sorted(wanted)
-            )
+            calendars = {name: calendar.resolve_calendar(name) for name in sorted(wanted)}
+            resolved = ", ".join(f"{name!r} -> {cal}" for name, cal in calendars.items())
             results.append(CheckResult("google", True, resolved))
         except Exception as exc:
             results.append(CheckResult("google", False, str(exc)))
+            calendars = {}
+
+        if calendars:
+            results.append(_check_caldav(calendar, next(iter(calendars.values()))))
 
     return results
+
+
+def _check_caldav(calendar: CalendarClient, calendar_id: str) -> CheckResult:
+    """The CalDAV API answers, so links back to the source email can be written.
+
+    It is a second API on the same Cloud project, enabled separately. Events still land
+    without it - they just arrive with no way back to the email that made them.
+    """
+    try:
+        calendar.probe_caldav(calendar_id)
+    except Exception as exc:
+        return CheckResult("caldav", False, f"events will be created without mail links: {exc}")
+    return CheckResult("caldav", True, "source-email links can be written")
 
 
 def _check_ollama(settings: Settings) -> CheckResult:

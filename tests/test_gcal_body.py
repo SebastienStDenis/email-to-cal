@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 from email_to_cal.config import Settings
-from email_to_cal.gcal import build_event_body, calendar_link, event_id_for
+from email_to_cal.gcal import build_event_body, calendar_link, event_id_for, mail_link
 from email_to_cal.schema import EventLocation, ExtractedEvent
 
 GOOGLE_ID_CHARSET = re.compile(r"^[a-v0-9]{5,1024}$")
@@ -113,15 +113,18 @@ def test_source_message_is_recorded_for_later_reconciliation(settings: Settings)
     assert "K3TQ9P" in body["description"]
 
 
-def test_description_links_to_the_source_email(settings: Settings) -> None:
+def test_the_description_carries_no_plumbing(settings: Settings) -> None:
     body = build_event_body(flight(), settings, message_id="<a@b>")
-    assert "Open in Apple Mail: message://%3Ca@b%3E" in body["description"]
     assert "<a@b>" not in body["description"]
-
-
-def test_synthetic_message_ids_get_no_mail_link(settings: Settings) -> None:
-    body = build_event_body(flight(), settings, message_id="<sha256-0f@email-to-cal.local>")
     assert "message://" not in body["description"]
+
+
+def test_the_mail_link_is_an_apple_mail_deep_link() -> None:
+    assert mail_link("<a@b>") == "message://%3Ca@b%3E"
+
+
+def test_synthetic_message_ids_get_no_mail_link() -> None:
+    assert mail_link("<sha256-0f@email-to-cal.local>") is None
 
 
 def test_unresolvable_location_uses_the_configured_default(settings: Settings) -> None:

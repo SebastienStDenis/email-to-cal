@@ -14,7 +14,7 @@ import secrets
 import threading
 import time
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, get_args
 from urllib.parse import urlsplit
 from zoneinfo import available_timezones
 
@@ -28,6 +28,7 @@ from .app import run
 from .checks import run_checks
 from .config import CONFIG_FILE, Settings
 from .gcal import SCOPES, client_config, save_token
+from .schema import EventKind
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -52,6 +53,7 @@ FORM_FIELDS = [
     "enable_vision",
     "max_attachment_mb",
     "min_confidence",
+    "excluded_kinds",
     "dedup_window_minutes",
     "google_client_id",
     "google_client_secret",
@@ -149,6 +151,8 @@ def parse_form(form: Any) -> dict[str, Any]:
             "pushover_notify_errors",
         ):
             values[name] = name in form
+        elif name == "excluded_kinds":
+            values[name] = form.getlist("excluded_kind")
         elif name == "sweep_folders":
             # One hidden input per chip, so folder names need no delimiter at all.
             values[name] = [f.strip() for f in form.getlist("sweep_folder") if f.strip()]
@@ -228,6 +232,7 @@ def create_app(supervisor: Supervisor) -> Flask:
             google_connected=settings.google_token_file.exists(),
             missing=missing_for_start(settings),
             timezones=sorted(available_timezones()),
+            event_kinds=get_args(EventKind),
         )
 
     @app.post("/settings")
@@ -244,6 +249,7 @@ def create_app(supervisor: Supervisor) -> Flask:
                 missing=[],
                 errors=errors,
                 timezones=sorted(available_timezones()),
+                event_kinds=get_args(EventKind),
             )
         supervisor.restart()
         settings = Settings()

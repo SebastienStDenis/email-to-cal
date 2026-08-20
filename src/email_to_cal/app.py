@@ -10,7 +10,13 @@ from dataclasses import dataclass, field
 import anthropic
 
 from .config import Settings
-from .gcal import CalendarClient, CredentialsExpired, build_event_body, calendar_link
+from .gcal import (
+    CalendarClient,
+    CredentialsExpired,
+    build_event_body,
+    calendar_link,
+    mail_link,
+)
 from .llm import Extractor, cache_key
 from .local_llm import FilterVerdict, OllamaFilter, filter_cache_key, make_prefilter
 from .mailbox import AuthenticationFatal, Mailbox, sleep_with_backoff
@@ -98,6 +104,10 @@ class Pipeline:
             return outcome
 
         for event in result.events:
+            if event.kind in settings.excluded_kinds:
+                log.info("skipping excluded %s event %r", event.kind, event.title)
+                outcome.skipped.append((event.title, f"{event.kind} events are excluded"))
+                continue
             if event.confidence < settings.min_confidence:
                 log.info(
                     "skipping low-confidence event %r (%.2f < %.2f): %s",
@@ -178,7 +188,7 @@ class Pipeline:
                 )
                 return
 
-        event_id = self._calendar.insert(calendar_id, body)
+        event_id = self._calendar.insert(calendar_id, body, url=mail_link(doc.message_id))
         self._store.record_event(event_id, doc.message_id, calendar_id, event.title)
         log.info("created %r on %r (%s)", event.title, calendar_name, event_id)
         outcome.created.append((calendar_name, event.title))

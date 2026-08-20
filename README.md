@@ -49,6 +49,11 @@ reminder, an updated itinerary - is caught fuzzily instead: an event on the targ
 calendar starting within an hour (configurable under Advanced settings) with a
 near-identical title or the same booking reference means nothing new is created.
 
+Every event links back to the email it came from: a `message://` deep link in the event's
+URL field, which Apple Calendar opens in Mail. Google's JSON API takes no URL outside
+http(s), so the link is written over CalDAV - which is why the setup enables the CalDAV
+API alongside the Calendar API.
+
 ## Prerequisites
 
 Whichever way you run it, you need three credentials. Have them ready before you start.
@@ -69,7 +74,8 @@ A one-time, five-minute setup in the Google Cloud console. You come out of it wi
 strings: a client id and a client secret.
 
 1. At [console.cloud.google.com](https://console.cloud.google.com), create a project.
-2. **APIs & Services → Library** → enable the **Google Calendar API**.
+2. **APIs & Services → Library** → enable the **Google Calendar API** and the
+   **CalDAV API**.
 3. **APIs & Services → OAuth consent screen** (Google Auth Platform): set it up for
    **External** users, then set the publishing status to **In production**.
 4. **APIs & Services → Credentials → Create Credentials → OAuth client ID → Desktop
@@ -212,12 +218,16 @@ uv run email-to-cal replay samples/weird.eml --dry-run
 
 ## Tuning the gate
 
-Two settings control how eager the service is:
+Three settings control how eager the service is:
 
 - **Minimum confidence** (default `0.75`) - events below this are logged with the reason
   and dropped. Raise it if you get junk, lower it if real bookings are being missed.
 - **Effort** (default `medium`) - how hard the model thinks. `high` catches more awkward
   emails at higher cost.
+- **Never add** (default: nothing) - kinds of event that are dropped whatever category
+  they match: flight, train, hotel, concert, restaurant, appointment, other. Ticking
+  *flight* keeps flights off every calendar while trains and hotels still land on the
+  travel one.
 
 Model responses are cached in the state database keyed by content, so replays and
 restarts never re-bill you for the same email.
