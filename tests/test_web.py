@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -74,6 +75,15 @@ def test_settings_page_offers_timezone_suggestions(client: FlaskClient) -> None:
     page = client.get("/settings")
     assert b"timezone-suggestions" in page.data
     assert b"Europe/Zurich" in page.data
+
+
+def test_excluded_kinds_round_trip_through_the_form(client: FlaskClient) -> None:
+    client.post("/settings", data={**FORM, "excluded_kind": ["flight"]})
+    assert Settings().excluded_kinds == ["flight"]
+
+    page = client.get("/settings")
+    checkbox = re.search(rb'<input[^>]*value="flight"[^>]*>', page.data)
+    assert checkbox is not None and b"checked" in checkbox.group()
 
 
 def test_unchecked_checkboxes_come_back_false(client: FlaskClient) -> None:

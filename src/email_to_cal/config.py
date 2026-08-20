@@ -17,6 +17,8 @@ from pydantic_settings import (
     SettingsConfigDict,
 )
 
+from .schema import EventKind
+
 # Written by the web portal; relative so it lands in the mounted volume in the container
 # and in ./data locally, like every other runtime file.
 CONFIG_FILE = Path("data/config.json")
@@ -93,6 +95,10 @@ class Settings(BaseSettings):
     # A negative value would make every attachment look oversized and silently vanish.
     max_attachment_mb: float = Field(default=8.0, gt=0)
     min_confidence: float = Field(default=0.75, ge=0.0, le=1.0)
+    # Kinds of event that never belong on the calendar, whatever category they fall in.
+    # Dropped after extraction rather than asked for in the prompt, so the model's
+    # cached verdicts survive a change of mind here.
+    excluded_kinds: list[EventKind] = []
     # The deterministic event id only catches the same email again; a reminder or an
     # updated itinerary restates the same booking under a fresh Message-ID. An event
     # this close in time with a near-identical title or the same booking reference is
