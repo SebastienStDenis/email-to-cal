@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import httpx
 
@@ -15,6 +16,8 @@ VALIDATE_URL = "https://api.pushover.net/1/users/validate.json"
 
 # Pushover rejects longer messages outright; better a truncated alert than none.
 MAX_MESSAGE_LENGTH = 1024
+# A url over the limit fails the whole request, so an unusable link is dropped instead.
+MAX_URL_LENGTH = 512
 
 
 class Notifier:
@@ -27,10 +30,10 @@ class Notifier:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
 
-    def created(self, title: str, calendar: str) -> None:
+    def created(self, title: str, calendar: str, *, url: str | None = None) -> None:
         # Quiet priority: informational, so no chime when a 3am email books something.
         if self._settings.pushover_notify_events:
-            self._send("Event created", f"{title} on {calendar}", priority=-1)
+            self._send("Event created", f"{title} on {calendar}", priority=-1, url=url)
 
     def failure(self, message: str) -> None:
         if self._settings.pushover_notify_errors:
@@ -41,22 +44,22 @@ class Notifier:
         if self._settings.pushover_notify_errors:
             self._send("Service stopped", message, priority=1)
 
-    def _send(self, title: str, message: str, *, priority: int) -> None:
+    def _send(self, title: str, message: str, *, priority: int, url: str | None = None) -> None:
         settings = self._settings
         if not settings.pushover_user or not settings.pushover_token:
             return
+        data: dict[str, Any] = {
+            "token": settings.pushover_token,
+            "user": settings.pushover_user,
+            "title": title,
+            "message": message[:MAX_MESSAGE_LENGTH],
+            "priority": priority,
+        }
+        if url and len(url) <= MAX_URL_LENGTH:
+            data["url"] = url
+            data["url_title"] = "Open in Calendar"
         try:
-            response = httpx.post(
-                MESSAGES_URL,
-                data={
-                    "token": settings.pushover_token,
-                    "user": settings.pushover_user,
-                    "title": title,
-                    "message": message[:MAX_MESSAGE_LENGTH],
-                    "priority": priority,
-                },
-                timeout=10,
-            )
+            response = httpx.post(MESSAGES_URL, data=data, timeout=10)
             response.raise_for_status()
         except Exception:
             log.warning("pushover notification failed", exc_info=True)

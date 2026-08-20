@@ -153,6 +153,28 @@ def mail_link(message_id: str) -> str | None:
     return "message://" + quote(message_id, safe="@")
 
 
+# Apple counts from 2001, not 1970.
+_APPLE_EPOCH = datetime(2001, 1, 1, tzinfo=UTC)
+
+
+def calendar_link(body: dict[str, Any], *, default_timezone: str) -> str:
+    """A link that opens the iOS Calendar app on the event's day.
+
+    Apple offers no scheme for one specific event, only calshow, which takes an instant
+    the phone then renders in whatever zone it is currently in. Aiming at noon keeps the
+    date right even when the phone is a good half-day away from the event.
+    """
+    start = body["start"]
+    if "date" in start:
+        day = date.fromisoformat(start["date"])
+        zone = default_timezone
+    else:
+        day = datetime.fromisoformat(start["dateTime"]).date()
+        zone = start["timeZone"]
+    noon = localise(datetime(day.year, day.month, day.day, 12), zone)
+    return f"calshow:{int((noon - _APPLE_EPOCH).total_seconds())}"
+
+
 def fold_ical_line(line: str) -> str:
     """Split a content line at the 75-octet limit RFC 5545 sets, continuing with a space."""
     octets = line.encode()

@@ -351,6 +351,7 @@ def test_created_events_notify_the_phone_but_dry_runs_do_not(
 
     pipeline.process(fixture_bytes("concert_ics.eml"))
     assert [push["message"] for push in pushes] == ["Radiohead at The O2 on Music"]
+    assert pushes[0]["url"].startswith("calshow:")
 
     settings.dry_run = True
     pipeline.process(fixture_bytes("concert_ics.eml"), skip_seen=False)
