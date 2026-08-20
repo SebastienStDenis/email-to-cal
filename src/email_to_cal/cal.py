@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from urllib.parse import quote, urljoin
@@ -93,6 +94,8 @@ class BuiltEvent:
     uid: str
     ics: bytes
     title: str
+    # The calendar this event is routed to, by display name.
+    calendar: str
     # Always an aware instant, so it can be linked to and sorted; local midnight for
     # all-day events.
     starts_at: datetime
@@ -116,7 +119,9 @@ class BuiltEvent:
         return f"calshow:{int(noon.timestamp() - APPLE_EPOCH_OFFSET)}"
 
 
-def build_ical(event: ExtractedEvent, settings: Settings, *, message_id: str) -> BuiltEvent:
+def build_ical(
+    event: ExtractedEvent, settings: Settings, *, message_id: str, calendar: str = ""
+) -> BuiltEvent:
     """Render one extracted event as a single-event iCalendar object."""
     address = resolve_address(event)
     start_zone, end_zone = resolve_zones(
@@ -185,16 +190,17 @@ def build_ical(event: ExtractedEvent, settings: Settings, *, message_id: str) ->
     if address:
         entry.add("location", address)
 
-    calendar = Calendar()
-    calendar.add("prodid", "-//email-to-cal//EN")
-    calendar.add("version", "2.0")
-    calendar.add_component(entry)
+    document = Calendar()
+    document.add("prodid", "-//email-to-cal//EN")
+    document.add("version", "2.0")
+    document.add_component(entry)
     # A TZID reference is meaningless to a client without the VTIMEZONE that defines it.
-    calendar.add_missing_timezones()
+    document.add_missing_timezones()
     return BuiltEvent(
         uid=uid,
-        ics=calendar.to_ical(),
+        ics=document.to_ical(),
         title=event.title,
+        calendar=calendar,
         starts_at=starts_at,
         all_day=event.all_day or date_only,
     )
@@ -275,14 +281,31 @@ class CalendarClient:
                 found[label] = urljoin(answered_from, href.text)
         return found
 
-    def resolve(self, name: str) -> str:
-        """The collection URL for the configured calendar name."""
+    def resolve(self, names: Iterable[str]) -> dict[str, str]:
+        """The collection URL for each configured calendar name.
+
+        Every name is resolved against one discovery pass, and a name that matches
+        nothing fails here rather than on the first email that routes to it.
+        """
         available = self.calendars()
-        for label, url in available.items():
-            if label.strip().lower() == name.strip().lower():
-                return url
-        listed = ", ".join(sorted(available)) or "none"
-        raise CalendarUnavailable(f"no calendar named {name!r}; this account has: {listed}")
+        by_label = {label.strip().lower(): url for label, url in available.items()}
+
+        resolved: dict[str, str] = {}
+        missing: list[str] = []
+        for name in names:
+            url = by_label.get(name.strip().lower())
+            if url is None:
+                missing.append(name)
+            else:
+                resolved[name] = url
+
+        if missing:
+            listed = ", ".join(sorted(available)) or "none"
+            raise CalendarUnavailable(
+                f"no calendar named {', '.join(repr(name) for name in sorted(missing))}; "
+                f"this account has: {listed}"
+            )
+        return resolved
 
     def put(self, calendar_url: str, uid: str, ics: bytes) -> None:
         """Write one event, replacing any earlier version of itself."""

@@ -42,13 +42,13 @@ class Pipeline:
         store: Store,
         extractor: Extractor,
         calendar: CalendarClient,
-        calendar_url: str,
+        calendar_urls: dict[str, str],
     ) -> None:
         self._settings = settings
         self._store = store
         self._extractor = extractor
         self._calendar = calendar
-        self._calendar_url = calendar_url
+        self._calendar_urls = calendar_urls
 
     def process(self, doc: EmailDocument) -> list[BuiltEvent]:
         """Write every event in one email, and report what was written."""
@@ -66,12 +66,15 @@ class Pipeline:
 
         written = []
         for event in result.events:
-            built = build_ical(event, self._settings, message_id=doc.message_id)
-            self._calendar.put(self._calendar_url, built.uid, built.ics)
+            calendar_name = self._settings.calendar_for(event.category)
+            built = build_ical(
+                event, self._settings, message_id=doc.message_id, calendar=calendar_name
+            )
+            self._calendar.put(self._calendar_urls[calendar_name], built.uid, built.ics)
             self._store.record_event(
                 built.uid, doc.message_id, built.title, built.starts_at.isoformat()
             )
-            log.info("wrote %r (%s)", built.title, built.uid)
+            log.info("wrote %r to %r (%s)", built.title, calendar_name, built.uid)
             written.append(built)
         return written
 
@@ -86,14 +89,15 @@ def run(settings: Settings, stopping: threading.Event) -> None:
     with Store(settings.state_db) as store:
         calendar = CalendarClient(settings)
         try:
-            calendar_url = calendar.resolve(settings.calendar_name)
+            calendar_urls = calendar.resolve(settings.calendars)
         except CalendarUnavailable as exc:
-            log.critical("cannot open the calendar", exc_info=True)
+            log.critical("cannot open the calendars", exc_info=True)
             notifier.fatal(str(exc))
             raise
-        log.info("writing to calendar %r (%s)", settings.calendar_name, calendar_url)
+        for name, url in sorted(calendar_urls.items()):
+            log.info("calendar %r -> %s", name, url)
 
-        pipeline = Pipeline(settings, store, make_extractor(settings), calendar, calendar_url)
+        pipeline = Pipeline(settings, store, make_extractor(settings), calendar, calendar_urls)
         mailbox = Mailbox(settings)
         attempt = 0
         store.beat()
@@ -168,11 +172,7 @@ def _handle(
         mailbox.unflag(mail)
         # The push lands on the event itself: the calendar, on the day it happens. The
         # way back to the email is the link on the event.
-        notifier.created(
-            [built.describe() for built in written],
-            settings.calendar_name,
-            written[0].calendar_link,
-        )
+        notifier.created(written, written[0].calendar_link)
 
 
 def _due(failure: Failure) -> bool:

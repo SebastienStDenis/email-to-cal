@@ -73,6 +73,17 @@ class ExtractionFailed(RuntimeError):
     """The model could not answer. Distinct from an answer of "no events"."""
 
 
+def categories_block(settings: Settings) -> str:
+    """The operator's own categories, in their own words, for routing."""
+    if not settings.categories:
+        return "\n\nNo categories are configured. Always set category to null."
+    rendered = "\n".join(f"- {rule.name}: {rule.description}" for rule in settings.categories)
+    return (
+        "\n\n# Categories\n\nAssign each event to exactly one of these category names, or "
+        "null if none genuinely fit. Do not invent names.\n\n" + rendered
+    )
+
+
 def _pdf_text(data: bytes) -> str:
     """Best-effort text layer of a PDF; scanned or image-only PDFs come back empty."""
     try:
@@ -167,7 +178,7 @@ class AnthropicExtractor:
             # Thinking is on by default on Opus 5 and shares this budget with the answer,
             # so a multi-leg itinerary at high effort needs real headroom here.
             max_tokens=MAX_TOKENS,
-            system=SYSTEM_PROMPT,
+            system=SYSTEM_PROMPT + categories_block(settings),
             output_format=ExtractionResult,
             output_config={"effort": settings.anthropic_effort},
             messages=[{"role": "user", "content": self._content_blocks(doc)}],
@@ -247,7 +258,7 @@ class OllamaExtractor:
             "format": ExtractionResult.model_json_schema(),
             "options": {"num_ctx": settings.ollama_num_ctx},
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": SYSTEM_PROMPT + categories_block(settings)},
                 {
                     "role": "user",
                     "content": render_email(doc, settings, pdf_texts=_pdf_texts(doc)),

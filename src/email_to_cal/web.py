@@ -35,6 +35,7 @@ FORM_FIELDS = [
     "apple_password",
     "imap_host",
     "imap_port",
+    "flag_colour",
     "poll_interval_seconds",
     "provider",
     "anthropic_api_key",
@@ -45,8 +46,9 @@ FORM_FIELDS = [
     "enable_vision",
     "max_attachment_mb",
     "caldav_url",
-    "calendar_name",
+    "default_calendar",
     "default_timezone",
+    "categories",
     "pushover_user",
     "pushover_token",
     "log_level",
@@ -65,8 +67,8 @@ def missing_for_start(settings: Settings) -> list[str]:
         missing.append("iCloud credentials")
     if settings.provider == "anthropic" and not settings.anthropic_api_key:
         missing.append("Anthropic API key")
-    if not settings.calendar_name:
-        missing.append("calendar name")
+    if not settings.default_calendar:
+        missing.append("main calendar")
     return missing
 
 
@@ -127,10 +129,24 @@ def form_values(settings: Settings) -> dict[str, Any]:
 
 def parse_form(form: Any) -> dict[str, Any]:
     """The submitted form as Settings keyword arguments, still unvalidated."""
-    values: dict[str, Any] = {
-        name: name in form if name in CHECKBOX_FIELDS else form.get(name, "").strip()
-        for name in FORM_FIELDS
-    }
+    values: dict[str, Any] = {}
+    for name in FORM_FIELDS:
+        if name in CHECKBOX_FIELDS:
+            values[name] = name in form
+        elif name == "categories":
+            values[name] = [
+                {"name": rule_name, "description": description, "calendar": calendar}
+                for rule_name, description, calendar in zip(
+                    form.getlist("category_name"),
+                    form.getlist("category_description"),
+                    form.getlist("category_calendar"),
+                    strict=True,
+                )
+                # A row the operator emptied is a deletion, not a validation error.
+                if rule_name.strip() or description.strip() or calendar.strip()
+            ]
+        else:
+            values[name] = form.get(name, "").strip()
     # A cleared field means "back to the default", not "the empty string is my host".
     return {name: value for name, value in values.items() if value != ""}
 
@@ -220,7 +236,7 @@ def create_app(supervisor: Supervisor) -> Flask:
             running=supervisor.running,
             missing=supervisor.missing,
             error=supervisor.error,
-            calendar=settings.calendar_name,
+            calendar=settings.default_calendar,
             beat_age=None if beat is None else time.time() - beat,
             events=[
                 (summary, starts, time.time() - created) for summary, starts, created in events

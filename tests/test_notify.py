@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -27,13 +28,24 @@ def configured(**overrides: Any) -> Settings:
     return Settings(pushover_user="u", pushover_token="t", **overrides)
 
 
+@dataclass
+class FakeWritten:
+    """Stands in for a BuiltEvent: what a notification reads off a created event."""
+
+    line: str
+    calendar: str
+
+    def describe(self) -> str:
+        return self.line
+
+
 def test_nothing_is_sent_until_both_keys_are_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     post = RecordingPost()
     monkeypatch.setattr(httpx, "post", post)
 
-    Notifier(Settings(pushover_user="u")).created(["e"], "Bookings", None)
+    Notifier(Settings(pushover_user="u")).created([FakeWritten("e", "Bookings")], None)
     Notifier(Settings(pushover_token="t")).failed("s", "d", None)
 
     assert post.calls == []
@@ -45,7 +57,9 @@ def test_a_created_event_pushes_quietly_and_opens_the_calendar(
     post = RecordingPost()
     monkeypatch.setattr(httpx, "post", post)
 
-    Notifier(configured()).created(["Radiohead - Mon 14 Sep 20:00"], "Bookings", "calshow:123")
+    Notifier(configured()).created(
+        [FakeWritten("Radiohead - Mon 14 Sep 20:00", "Bookings")], "calshow:123"
+    )
 
     sent = post.calls[0]
     # Quiet: an email that books something at 3am should not wake anyone.
@@ -59,11 +73,29 @@ def test_several_events_are_one_push_not_several(monkeypatch: pytest.MonkeyPatch
     post = RecordingPost()
     monkeypatch.setattr(httpx, "post", post)
 
-    Notifier(configured()).created(["Outbound", "Return"], "Bookings", "calshow:1")
+    Notifier(configured()).created(
+        [FakeWritten("Outbound", "Bookings"), FakeWritten("Return", "Bookings")], "calshow:1"
+    )
 
     assert len(post.calls) == 1
     assert post.calls[0]["title"] == "2 events added to Bookings"
     assert post.calls[0]["message"] == "Outbound\nReturn"
+
+
+def test_events_on_different_calendars_are_named_per_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    post = RecordingPost()
+    monkeypatch.setattr(httpx, "post", post)
+
+    Notifier(configured()).created(
+        [FakeWritten("LX318", "Travel"), FakeWritten("Radiohead", "Music")], "calshow:1"
+    )
+
+    # Naming one calendar in the title would be wrong for the other event.
+    sent = post.calls[0]
+    assert sent["title"] == "2 events added"
+    assert sent["message"] == "LX318 → Travel\nRadiohead → Music"
 
 
 def test_a_failure_pushes_a_way_back_to_the_email(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -122,7 +154,7 @@ def test_send_failures_never_propagate(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(httpx, "post", explode)
 
     # A notification outage must never stall or fail mail processing.
-    Notifier(configured()).created(["e"], "Bookings", None)
+    Notifier(configured()).created([FakeWritten("e", "Bookings")], None)
 
 
 def test_validate_keys_reports_the_registered_devices(monkeypatch: pytest.MonkeyPatch) -> None:

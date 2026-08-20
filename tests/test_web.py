@@ -14,7 +14,7 @@ FORM = {
     "apple_password": "xxxx-xxxx",
     "provider": "anthropic",
     "anthropic_api_key": "sk-ant-test",
-    "calendar_name": "Bookings",
+    "default_calendar": "Bookings",
     "default_timezone": "Europe/Zurich",
     "enable_vision": "on",
     "log_level": "INFO",
@@ -40,11 +40,49 @@ def test_saving_the_form_writes_config_json_that_settings_pick_up(client: FlaskC
 
     saved = json.loads(CONFIG_FILE.read_text())
     assert saved["apple_id"] == "test@icloud.com"
-    assert saved["calendar_name"] == "Bookings"
+    assert saved["default_calendar"] == "Bookings"
 
     settings = Settings()
     assert settings.apple_password == "xxxx-xxxx"
     assert settings.default_timezone == "Europe/Zurich"
+
+
+def test_category_rows_round_trip(client: FlaskClient) -> None:
+    client.post(
+        "/settings",
+        data={
+            **FORM,
+            "category_name": ["travel", ""],
+            "category_description": ["Flights and hotels.", ""],
+            "category_calendar": ["Travel", ""],
+        },
+    )
+
+    rules = Settings().categories
+    # The empty row is a deletion, not a validation error.
+    assert [(r.name, r.description, r.calendar) for r in rules] == [
+        ("travel", "Flights and hotels.", "Travel")
+    ]
+    assert "Flights and hotels." in client.get("/settings").text
+
+
+def test_a_category_without_a_calendar_rerenders_the_form(client: FlaskClient) -> None:
+    reply = client.post(
+        "/settings",
+        data={
+            **FORM,
+            "category_name": ["travel"],
+            "category_description": ["Flights."],
+            "category_calendar": [""],
+        },
+    )
+    assert reply.status_code == 200
+    assert not CONFIG_FILE.exists()
+
+
+def test_the_flag_colour_is_saved(client: FlaskClient) -> None:
+    client.post("/settings", data={**FORM, "flag_colour": "purple"})
+    assert Settings().flag_colour == "purple"
 
 
 def test_unchecked_checkboxes_come_back_false(client: FlaskClient) -> None:
@@ -71,8 +109,8 @@ def test_unconfigured_service_redirects_home_to_settings(client: FlaskClient) ->
 
 
 def test_setup_is_incomplete_without_a_calendar(settings: Settings) -> None:
-    settings.calendar_name = ""
-    assert "calendar name" in missing_for_start(settings)
+    settings.default_calendar = ""
+    assert "main calendar" in missing_for_start(settings)
 
 
 def test_a_local_model_needs_no_api_key(settings: Settings) -> None:

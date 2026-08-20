@@ -1,8 +1,8 @@
 r"""iCloud IMAP: find the mail the human flagged, and clear the flag once it is done.
 
-The gate is a red flag in Mail. Apple encodes flag colours as `\Flagged` plus a
-`$MailFlagBitN` keyword per colour, and red - the default flag - is the one with no
-colour bits at all, so it is the one colour that can be recognised anywhere.
+The gate is one colour of flag in Mail. Apple encodes the colour as `\Flagged` plus a
+`$MailFlagBitN` keyword per bit of the colour index, so a message flagged on an iPhone
+reads the same everywhere, and the other colours keep whatever meaning you give them.
 
 Every selectable folder is searched on every pass, because a flag is set wherever the
 mail happens to be filed and mail moves between folders on its own.
@@ -15,19 +15,48 @@ import random
 import threading
 from dataclasses import dataclass
 
-from imap_tools import MailBox, MailMessageFlags
+from imap_tools import MailBox
 from imap_tools.errors import MailboxLoginError
 
 from .config import Settings
 
 log = logging.getLogger(__name__)
 
-# `\Flagged` with none of the colour bits set: Apple's red flag, and nothing else.
-RED_FLAG_CRITERIA = (
-    "FLAGGED UNKEYWORD $MailFlagBit0 UNKEYWORD $MailFlagBit1 UNKEYWORD $MailFlagBit2"
-)
+# Apple encodes a flag colour as `\Flagged` plus a keyword per bit of the colour index,
+# so every colour is a different combination of these three and red - the default - is
+# the one with none of them set.
+FLAG_BITS = ("$MailFlagBit0", "$MailFlagBit1", "$MailFlagBit2")
+FLAG_COLOURS: dict[str, frozenset[str]] = {
+    "red": frozenset(),
+    "orange": frozenset({"$MailFlagBit0"}),
+    "yellow": frozenset({"$MailFlagBit1"}),
+    "green": frozenset({"$MailFlagBit0", "$MailFlagBit1"}),
+    "blue": frozenset({"$MailFlagBit2"}),
+    "purple": frozenset({"$MailFlagBit0", "$MailFlagBit2"}),
+    "grey": frozenset({"$MailFlagBit1", "$MailFlagBit2"}),
+}
 # Folders whose contents are not mail the user is asking about.
 SKIP_FOLDER_FLAGS = {"\\Noselect", "\\Junk", "\\Trash", "\\Drafts"}
+
+
+def search_criteria(colour: str) -> str:
+    """An IMAP search matching one flag colour and no other.
+
+    Every bit is named either way round, because `\\Flagged` alone would match all seven
+    colours and a message flagged some other colour is not a request to this service.
+    """
+    wanted = FLAG_COLOURS[colour]
+    terms = [f"KEYWORD {bit}" if bit in wanted else f"UNKEYWORD {bit}" for bit in FLAG_BITS]
+    return " ".join(["FLAGGED", *terms])
+
+
+def clearing_flags(colour: str) -> tuple[str, ...]:
+    """What to remove to leave a message properly unflagged.
+
+    Dropping `\\Flagged` alone would leave the colour bits behind, and Mail reads those
+    back the next time the message is flagged by hand.
+    """
+    return ("\\Flagged", *sorted(FLAG_COLOURS[colour]))
 
 
 class AuthenticationFatal(RuntimeError):
@@ -36,7 +65,7 @@ class AuthenticationFatal(RuntimeError):
 
 @dataclass
 class FlaggedMail:
-    """One red-flagged message, and where it was found."""
+    """One flagged message, and where it was found."""
 
     folder: str
     uid: int
@@ -110,16 +139,17 @@ class Mailbox:
             self._selected = folder
 
     def flagged(self) -> list[FlaggedMail]:
-        """Every red-flagged message in the account, read in one pass.
+        """Every flagged message in the account, read in one pass.
 
         Read eagerly rather than streamed: processing one email takes model calls and
         network writes, and holding a half-consumed IMAP fetch open across all of that
         is what makes iCloud drop the connection.
         """
+        criteria = search_criteria(self._settings.flag_colour)
         found: list[FlaggedMail] = []
         for folder in self.folders():
             self._select(folder)
-            for message in self._connection.fetch(RED_FLAG_CRITERIA, mark_seen=False, bulk=False):
+            for message in self._connection.fetch(criteria, mark_seen=False, bulk=False):
                 found.append(
                     FlaggedMail(
                         folder=folder, uid=int(message.uid or 0), raw=message.obj.as_bytes()
@@ -131,16 +161,17 @@ class Mailbox:
 
     def count_flagged(self) -> int:
         """How many messages are waiting, without downloading any of them."""
+        criteria = search_criteria(self._settings.flag_colour)
         total = 0
         for folder in self.folders():
             self._select(folder)
-            total += len(self._connection.uids(RED_FLAG_CRITERIA))
+            total += len(self._connection.uids(criteria))
         return total
 
     def unflag(self, mail: FlaggedMail) -> None:
-        """Clear the red flag: the only signal the user gets that a message is done."""
+        """Clear the flag: the only signal the user gets that a message is done."""
         self._select(mail.folder)
-        self._connection.flag(str(mail.uid), MailMessageFlags.FLAGGED, False)
+        self._connection.flag(str(mail.uid), clearing_flags(self._settings.flag_colour), False)
 
 
 def _discard(box: MailBox) -> None:
