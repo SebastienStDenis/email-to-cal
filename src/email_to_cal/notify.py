@@ -58,8 +58,7 @@ class Notifier:
             title = count
             lines = [f"{event.describe()} → {event.calendar}" for event in events]
 
-        # Quiet priority: informational, so no chime when a 3am email books something.
-        self._send(title, "\n".join(lines), priority=-1, link=link, link_title="Open in Calendar")
+        self._send(title, "\n".join(lines), priority=0, link=link, link_title="Open in Calendar")
 
     def failed(self, subject: str, detail: str, link: str | None) -> None:
         self._send(

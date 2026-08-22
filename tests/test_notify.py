@@ -51,7 +51,7 @@ def test_nothing_is_sent_until_both_keys_are_configured(
     assert post.calls == []
 
 
-def test_a_created_event_pushes_quietly_and_opens_the_calendar(
+def test_a_created_event_pushes_normally_and_opens_the_calendar(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     post = RecordingPost()
@@ -62,8 +62,7 @@ def test_a_created_event_pushes_quietly_and_opens_the_calendar(
     )
 
     sent = post.calls[0]
-    # Quiet: an email that books something at 3am should not wake anyone.
-    assert sent["priority"] == -1
+    assert sent["priority"] == 0
     assert sent["title"] == "Event added to Bookings"
     assert sent["url"] == "calshow:123"
     assert sent["url_title"] == "Open in Calendar"
