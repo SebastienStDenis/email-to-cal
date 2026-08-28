@@ -25,9 +25,9 @@ from icalendar import Calendar, Event
 
 from .config import Settings
 from .mime import SYNTHETIC_ID_DOMAIN
-from .places import resolve_address
+from .places import format_address, resolve_place
 from .schema import ExtractedEvent
-from .timezones import localise, parse_naive, resolve_zones
+from .timezones import localise, parse_naive, resolve_zones, same_clock, zone_label
 
 log = logging.getLogger(__name__)
 
@@ -100,11 +100,22 @@ class BuiltEvent:
     # all-day events.
     starts_at: datetime
     all_day: bool
+    # The zone the start is written in, named for a human when it is not the operator's
+    # own - "London" - and empty when it is.
+    zone_note: str = ""
 
     def describe(self) -> str:
-        """One line naming the event and when it starts, for pushes and the portal."""
-        stamp = f"{self.starts_at:%a %d %b}" if self.all_day else f"{self.starts_at:%a %d %b %H:%M}"
-        return f"{self.title} - {stamp}"
+        """One line naming the event and when it starts, for pushes and the portal.
+
+        A time is always the local time where the event happens, which is not where the
+        phone reading the push necessarily is - so a zone that is not the operator's own
+        is named. Without that, a bare "12:30" reads as 12:30 at home, and an event the
+        calendar then shows hours earlier looks like the calendar got it wrong.
+        """
+        if self.all_day:
+            return f"{self.title} - {self.starts_at:%a %d %b}"
+        zone = f" {self.zone_note} time" if self.zone_note else ""
+        return f"{self.title} - {self.starts_at:%a %d %b %H:%M}{zone}"
 
     @property
     def calendar_link(self) -> str:
@@ -123,13 +134,15 @@ def build_ical(
     event: ExtractedEvent, settings: Settings, *, message_id: str, calendar: str = ""
 ) -> BuiltEvent:
     """Render one extracted event as a single-event iCalendar object."""
-    address = resolve_address(event)
+    place = resolve_place(event)
+    address = format_address(place)
     start_zone, end_zone = resolve_zones(
         start_tz=event.start_tz,
         end_tz=event.end_tz,
         departure_iata=event.departure_iata,
         arrival_iata=event.arrival_iata,
-        location=address,
+        locality=place.locality if place else None,
+        country=place.country if place else None,
         default_timezone=settings.default_timezone,
     )
 
@@ -203,6 +216,9 @@ def build_ical(
         calendar=calendar,
         starts_at=starts_at,
         all_day=event.all_day or date_only,
+        zone_note=(
+            "" if same_clock(starts_at, settings.default_timezone) else zone_label(start_zone)
+        ),
     )
 
 
