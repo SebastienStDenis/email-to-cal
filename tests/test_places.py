@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from email_to_cal.places import airport_location, format_address, resolve_address
+from email_to_cal.places import airport_location, format_address, resolve_place
 from email_to_cal.schema import EventLocation, ExtractedEvent
 
 
@@ -62,12 +62,12 @@ def test_airport_addresses_come_from_the_offline_dataset() -> None:
 
 def test_a_flight_is_located_at_its_departure_airport() -> None:
     flight = event(kind="flight", departure_iata="HND", arrival_iata="LAX")
-    assert resolve_address(flight) == "Tokyo International Airport, Tokyo, JP"
+    assert format_address(resolve_place(flight)) == "Tokyo International Airport, Tokyo, JP"
 
 
 def test_an_airport_beats_a_bare_name_the_model_supplied() -> None:
     flight = event(kind="flight", departure_iata="HND", location=EventLocation(name="Tokyo Haneda"))
-    assert resolve_address(flight) == "Tokyo International Airport, Tokyo, JP"
+    assert format_address(resolve_place(flight)) == "Tokyo International Airport, Tokyo, JP"
 
 
 def test_a_real_address_in_the_email_beats_the_dataset() -> None:
@@ -78,8 +78,8 @@ def test_a_real_address_in_the_email_beats_the_dataset() -> None:
             name="Haneda Terminal 3", street="2-6-5 Hanedakuko", locality="Ota City"
         ),
     )
-    assert resolve_address(flight) == "Haneda Terminal 3, 2-6-5 Hanedakuko, Ota City"
+    assert format_address(resolve_place(flight)) == "Haneda Terminal 3, 2-6-5 Hanedakuko, Ota City"
 
 
 def test_events_with_no_location_at_all_get_none() -> None:
-    assert resolve_address(event()) is None
+    assert format_address(resolve_place(event())) is None

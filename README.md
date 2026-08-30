@@ -40,9 +40,11 @@ HTML, then PDFs and images passed to the model as vision input - which is how bo
 passes and e-tickets get read.
 
 **Timezones are resolved deterministically.** An explicit zone in the email beats an
-offline IATA airport lookup, which beats a city match, which beats your configured time
-zone. A Tokyo → Los Angeles flight gets `Asia/Tokyo` on the departure and
-`America/Los_Angeles` on the arrival, and renders correctly in both.
+offline IATA airport lookup, which beats the address's city, which beats your configured
+time zone. A Tokyo → Los Angeles flight gets `Asia/Tokyo` on the departure and
+`America/Los_Angeles` on the arrival, and renders correctly in both. Only the city field
+itself is read, and a stated country has to agree with it - a lunch at a "Boston Pizza"
+in Ottawa stays in Ottawa's zone, and London, Ontario is not five hours ahead of itself.
 
 **Locations are written as full addresses**, because a calendar geocodes the location
 string and only shows a map, directions, and travel time when it resolves. The model
@@ -187,6 +189,10 @@ Then finish on **Preferences**:
 **Advanced**, on the same tab, holds the log level.
 
 Then flag an email.
+
+A `data/config.json` written by an earlier release is carried across on the first boot -
+its credentials into `data/secrets.env`, its preferences into the database - and renamed
+`config.json.imported`.
 
 If you would rather a deployment come up already knowing a credential, put it in the
 container's environment, either through an `environment:` block or a `.env` beside

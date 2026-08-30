@@ -48,8 +48,8 @@ def airport_location(code: str | None) -> EventLocation | None:
     )
 
 
-def resolve_address(event: ExtractedEvent) -> str | None:
-    """The location line for one event.
+def resolve_place(event: ExtractedEvent) -> EventLocation | None:
+    """The place one event happens, in parts.
 
     A flight happens at its departure airport, and the airport dataset knows that place
     better than the email does - so it wins unless the email gave a real address.
@@ -57,7 +57,7 @@ def resolve_address(event: ExtractedEvent) -> str | None:
     location = event.location
     if not (location and location.has_address):
         location = airport_location(event.departure_iata) or location
-    return format_address(location)
+    return location
 
 
 def format_address(location: EventLocation | None) -> str | None:

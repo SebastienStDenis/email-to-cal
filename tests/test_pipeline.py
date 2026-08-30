@@ -133,7 +133,7 @@ def test_a_flagged_email_is_written_unflagged_and_pushed(preferences: Prefs, sto
     assert len(store.recent_events()) == 1
 
     events, calendars, link = notifier.created_pushes[0]
-    assert events == ["Radiohead at the O2 - Mon 14 Sep 20:00"]
+    assert events == ["Radiohead at the O2 - Mon 14 Sep 20:00 London time"]
     assert calendars == ["Bookings"]
     # Success opens the calendar on the day, not the email it came from.
     assert link is not None and link.startswith("calshow:")

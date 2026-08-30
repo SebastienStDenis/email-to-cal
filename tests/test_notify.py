@@ -84,12 +84,11 @@ def test_a_stopped_service_is_pushed_whatever_the_switches_say(post: RecordingPo
     assert len(post.calls) == 1
 
 
-def test_a_created_event_pushes_quietly_and_opens_the_calendar(post: RecordingPost) -> None:
+def test_a_created_event_pushes_normally_and_opens_the_calendar(post: RecordingPost) -> None:
     notifier().created([FakeWritten("Radiohead - Mon 14 Sep 20:00", "Bookings")], "calshow:123")
 
     sent = post.calls[0]
-    # Quiet: an email that books something at 3am should not wake anyone.
-    assert sent["priority"] == -1
+    assert sent["priority"] == 0
     assert sent["title"] == "Event added to Bookings"
     assert sent["url"] == "calshow:123"
     assert sent["url_title"] == "Open in Calendar"
