@@ -543,6 +543,42 @@ def test_the_page_lists_what_reached_the_calendar(client: FlaskClient) -> None:
     assert text.count('href="calshow:') == 2
 
 
+def test_a_mac_gets_the_scheme_macos_registers(client: FlaskClient) -> None:
+    with store() as db:
+        db.record_event("u1", "<a@b>", "Radiohead at the O2", "2026-09-14T20:00:00+01:00")
+
+    text = client.get(
+        "/",
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/605.1.15 Version/18.6 Safari/605.1.15"
+            )
+        },
+    ).text
+
+    assert 'href="ical://date/2026-09-14_12-00-00?method=show"' in text
+    assert "calshow:" not in text
+
+
+def test_an_ipad_in_desktop_mode_keeps_the_calshow_link(client: FlaskClient) -> None:
+    with store() as db:
+        db.record_event("u1", "<a@b>", "Radiohead at the O2", "2026-09-14T20:00:00+01:00")
+
+    text = client.get(
+        "/",
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15) "
+                "AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1"
+            )
+        },
+    ).text
+
+    assert 'href="calshow:' in text
+    assert "ical://date/" not in text
+
+
 def test_retrying_forgets_only_that_failure(client: FlaskClient) -> None:
     with store() as db:
         db.record_failure("<a@b>", "First", 3, "boom", None)

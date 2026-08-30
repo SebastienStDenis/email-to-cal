@@ -1,5 +1,4 @@
 {% extends "base.html" %}
-{% block title %}Email{% endblock %}
 {% block content %}
 
 <h1 class="mb-4 text-xl font-semibold tracking-tight">Email</h1>
@@ -123,7 +122,7 @@
     </section>
     <aside class="items-center gap-1 self-start">
       <a class="btn -mr-2" data-variant="ghost" data-size="icon-sm"
-         href="{{ event.starts_at|calshow }}"
+         href="{{ event.starts_at|calendar_link }}"
          title="Open in Calendar" aria-label="Open in Calendar">
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
              stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

@@ -131,12 +131,15 @@ def starts(value: str) -> str:
     return f"{datetime.fromisoformat(value):%a %-d %b %H:%M}"
 
 
-def calshow(value: str) -> str:
+def calendar_link(value: str) -> str:
     """A link that opens the Calendar app on the event's day.
 
     The same aim as a push's link (see cal.BuiltEvent.calendar_link): noon of the day,
     so the date survives whatever zone the phone opening it is in. An all-day event is
     stored by its day alone, so its noon is read in the operator's own zone.
+
+    iOS answers `calshow:` and macOS only `ical://`, so the User-Agent picks. An iPad
+    asking for the desktop site says Macintosh too, but keeps Mobile/ in its string.
     """
     if len(value) == 10:
         noon = datetime.fromisoformat(f"{value}T12:00:00").replace(
@@ -144,6 +147,9 @@ def calshow(value: str) -> str:
         )
     else:
         noon = datetime.fromisoformat(value).replace(hour=12, minute=0, second=0, microsecond=0)
+    user_agent = request.headers.get("User-Agent", "")
+    if "Macintosh" in user_agent and "Mobile/" not in user_agent:
+        return f"ical://date/{noon:%Y-%m-%d_%H-%M-%S}?method=show"
     return f"calshow:{int(noon.timestamp() - APPLE_EPOCH_OFFSET)}"
 
 
@@ -191,7 +197,7 @@ def create_app(supervisor: Supervisor) -> Flask:
     app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1, x_port=1)  # type: ignore[method-assign]
     app.secret_key = secrets.token_hex(32)
     app.jinja_env.globals.update(email_url=mail_link)
-    app.jinja_env.filters.update(ago=ago, calshow=calshow, starts=starts)
+    app.jinja_env.filters.update(ago=ago, calendar_link=calendar_link, starts=starts)
     # Once for the process rather than per use: it also tells the poll after an update
     # that the process answering is a new one, stamped commit or not.
     build = _build_id()
