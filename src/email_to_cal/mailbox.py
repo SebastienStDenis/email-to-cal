@@ -22,12 +22,15 @@ from .config import Settings
 
 log = logging.getLogger(__name__)
 
+IMAP_HOST = "imap.mail.me.com"
+IMAP_PORT = 993
+
 # Apple encodes a flag colour as `\Flagged` plus a keyword per bit of the colour index,
-# so every colour is a different combination of these three and red - the default - is
-# the one with none of them set.
+# so every colour is a different combination of these three. Red is the one with none of
+# them set, which makes it indistinguishable from a plain flag set by anything else, so
+# it is not on offer.
 FLAG_BITS = ("$MailFlagBit0", "$MailFlagBit1", "$MailFlagBit2")
 FLAG_COLOURS: dict[str, frozenset[str]] = {
-    "red": frozenset(),
     "orange": frozenset({"$MailFlagBit0"}),
     "yellow": frozenset({"$MailFlagBit1"}),
     "green": frozenset({"$MailFlagBit0", "$MailFlagBit1"}),
@@ -42,8 +45,8 @@ SKIP_FOLDER_FLAGS = {"\\Noselect", "\\Junk", "\\Trash", "\\Drafts"}
 def search_criteria(colour: str) -> str:
     """An IMAP search matching one flag colour and no other.
 
-    Every bit is named either way round, because `\\Flagged` alone would match all seven
-    colours and a message flagged some other colour is not a request to this service.
+    Every bit is named either way round, because `\\Flagged` alone would match every
+    colour and a message flagged some other colour is not a request to this service.
     """
     wanted = FLAG_COLOURS[colour]
     terms = [f"KEYWORD {bit}" if bit in wanted else f"UNKEYWORD {bit}" for bit in FLAG_BITS]
@@ -75,31 +78,32 @@ class FlaggedMail:
 class Mailbox:
     """A supervised IMAP connection that reads flags and clears them."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, colour: str) -> None:
         self._settings = settings
+        self.colour = colour
         self._box: MailBox | None = None
         self._selected: str | None = None
 
     def connect(self) -> None:
         settings = self._settings
-        candidates = [settings.apple_id]
-        if "@" in settings.apple_id:
+        candidates = [settings.icloud_email]
+        if "@" in settings.icloud_email:
             # Apple documents the local part as the username and the full address as a
             # fallback; in the wild either can be the one that works.
-            candidates.append(settings.apple_id.split("@", 1)[0])
+            candidates.append(settings.icloud_email.split("@", 1)[0])
 
         last_error: Exception | None = None
         for username in candidates:
             # A fresh MailBox per attempt: a rejected login leaves the old one unusable.
-            box = MailBox(settings.imap_host, port=settings.imap_port, timeout=120)
+            box = MailBox(IMAP_HOST, port=IMAP_PORT, timeout=120)
             try:
-                box.login(username, settings.apple_password)
+                box.login(username, settings.icloud_app_password)
             except MailboxLoginError as exc:
                 last_error = exc
                 log.warning("IMAP login rejected for username %r", username)
                 _discard(box)
                 continue
-            log.info("connected to %s as %r", settings.imap_host, username)
+            log.info("connected to %s as %r", IMAP_HOST, username)
             self._box = box
             # Login selects nothing, so the first search must select its folder itself.
             self._selected = None
@@ -145,7 +149,7 @@ class Mailbox:
         network writes, and holding a half-consumed IMAP fetch open across all of that
         is what makes iCloud drop the connection.
         """
-        criteria = search_criteria(self._settings.flag_colour)
+        criteria = search_criteria(self.colour)
         found: list[FlaggedMail] = []
         for folder in self.folders():
             self._select(folder)
@@ -161,7 +165,7 @@ class Mailbox:
 
     def count_flagged(self) -> int:
         """How many messages are waiting, without downloading any of them."""
-        criteria = search_criteria(self._settings.flag_colour)
+        criteria = search_criteria(self.colour)
         total = 0
         for folder in self.folders():
             self._select(folder)
@@ -171,7 +175,7 @@ class Mailbox:
     def unflag(self, mail: FlaggedMail) -> None:
         """Clear the flag: the only signal the user gets that a message is done."""
         self._select(mail.folder)
-        self._connection.flag(str(mail.uid), clearing_flags(self._settings.flag_colour), False)
+        self._connection.flag(str(mail.uid), clearing_flags(self.colour), False)
 
 
 def _discard(box: MailBox) -> None:

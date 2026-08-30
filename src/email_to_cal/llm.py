@@ -1,8 +1,7 @@
 """One model call per flagged email: read it, and return the events it commits to.
 
 The human already decided the email matters by flagging it, so the model is never asked
-whether an event belongs on the calendar - only what the event is. Either Claude or a
-local Ollama model does the whole job; there is no cascade between them.
+whether an event belongs on the calendar - only what the event is.
 """
 
 from __future__ import annotations
@@ -10,25 +9,22 @@ from __future__ import annotations
 import base64
 import json
 import logging
-from io import BytesIO
-from typing import Any, Protocol
+from typing import Any, Literal
 
 import anthropic
-import httpx
-from pypdf import PdfReader
 
 from .config import Settings
+from .prefs import Prefs
 from .schema import EmailDocument, ExtractionResult
 
 log = logging.getLogger(__name__)
 
+MODEL = "claude-opus-5"
+EFFORT: Literal["medium"] = "medium"
 # Shared by thinking and the answer, so this is not just the size of the JSON.
 MAX_TOKENS = 16000
 # Base64 inflates by 4/3 and the API caps a request at 32 MB; leave clear air.
 MAX_TOTAL_ENCODED_BYTES = 20 * 1024 * 1024
-# Enough for a multi-leg itinerary; past this a PDF is boilerplate, not booking detail.
-MAX_PDF_TEXT_CHARS = 15000
-MAX_PDF_PAGES = 10
 
 SYSTEM_PROMPT = """\
 You read one email and extract the events in it that belong on the recipient's calendar. \
@@ -73,45 +69,18 @@ class ExtractionFailed(RuntimeError):
     """The model could not answer. Distinct from an answer of "no events"."""
 
 
-def categories_block(settings: Settings) -> str:
+def categories_block(prefs: Prefs) -> str:
     """The operator's own categories, in their own words, for routing."""
-    if not settings.categories:
+    if not prefs.categories:
         return "\n\nNo categories are configured. Always set category to null."
-    rendered = "\n".join(f"- {rule.name}: {rule.description}" for rule in settings.categories)
+    rendered = "\n".join(f"- {rule.name}: {rule.description}" for rule in prefs.categories)
     return (
         "\n\n# Categories\n\nAssign each event to exactly one of these category names, or "
         "null if none genuinely fit. Do not invent names.\n\n" + rendered
     )
 
 
-def _pdf_text(data: bytes) -> str:
-    """Best-effort text layer of a PDF; scanned or image-only PDFs come back empty."""
-    try:
-        reader = PdfReader(BytesIO(data))
-        pages = [page.extract_text() or "" for page in reader.pages[:MAX_PDF_PAGES]]
-        return "\n".join(pages).strip()
-    except Exception:
-        log.debug("PDF text extraction failed", exc_info=True)
-        return ""
-
-
-def _pdf_texts(doc: EmailDocument) -> list[tuple[str, str]]:
-    texts: list[tuple[str, str]] = []
-    remaining = MAX_PDF_TEXT_CHARS
-    for attachment in doc.attachments:
-        if not attachment.is_pdf or remaining <= 0:
-            continue
-        extracted = _pdf_text(attachment.data)[:remaining]
-        if not extracted:
-            continue
-        remaining -= len(extracted)
-        texts.append((attachment.filename, extracted))
-    return texts
-
-
-def render_email(
-    doc: EmailDocument, settings: Settings, pdf_texts: list[tuple[str, str]] | None = None
-) -> str:
+def render_email(doc: EmailDocument, prefs: Prefs) -> str:
     """Lay the email out for the model, structured tiers first."""
     lines = [
         "<email>",
@@ -119,17 +88,9 @@ def render_email(
         f"To: {doc.to}",
         f"Subject: {doc.subject}",
         f"Sent: {doc.date.isoformat() if doc.date else 'unknown'}",
-        f"Recipient's default timezone: {settings.default_timezone}",
+        f"Recipient's default timezone: {prefs.timezone}",
         "",
     ]
-
-    for filename, text in pdf_texts or []:
-        lines += [
-            f"<attachment_text file='{filename}' note='text layer of an attached PDF'>",
-            text,
-            "</attachment_text>",
-            "",
-        ]
 
     if doc.json_ld:
         lines += [
@@ -152,42 +113,28 @@ def render_email(
     return "\n".join(lines)
 
 
-class Extractor(Protocol):
-    """Whatever reads an email and returns its events."""
-
-    def extract(self, doc: EmailDocument) -> ExtractionResult: ...
-
-
-def make_extractor(settings: Settings) -> Extractor:
-    if settings.provider == "ollama":
-        return OllamaExtractor(settings)
-    return AnthropicExtractor(settings)
-
-
-class AnthropicExtractor:
+class Extractor:
     """Claude, with attachments as vision input when the text tiers come up short."""
 
-    def __init__(self, settings: Settings, client: anthropic.Anthropic | None = None) -> None:
-        self._settings = settings
+    def __init__(
+        self, settings: Settings, prefs: Prefs, client: anthropic.Anthropic | None = None
+    ) -> None:
+        self._prefs = prefs
         self._client = client or anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
     def extract(self, doc: EmailDocument) -> ExtractionResult:
-        settings = self._settings
         response = self._client.messages.parse(
-            model=settings.anthropic_model,
+            model=MODEL,
             # Thinking is on by default on Opus 5 and shares this budget with the answer,
-            # so a multi-leg itinerary at high effort needs real headroom here.
+            # so a multi-leg itinerary needs real headroom here.
             max_tokens=MAX_TOKENS,
-            system=SYSTEM_PROMPT + categories_block(settings),
+            system=SYSTEM_PROMPT + categories_block(self._prefs),
             output_format=ExtractionResult,
-            output_config={"effort": settings.anthropic_effort},
+            output_config={"effort": EFFORT},
             messages=[{"role": "user", "content": self._content_blocks(doc)}],
         )
         if response.stop_reason == "max_tokens":
-            raise ExtractionFailed(
-                f"hit the {MAX_TOKENS} token ceiling before finishing; "
-                "lower the effort setting or raise the ceiling"
-            )
+            raise ExtractionFailed(f"hit the {MAX_TOKENS} token ceiling before finishing")
         if response.stop_reason == "refusal":
             raise ExtractionFailed(
                 f"the model declined to read this email: {response.stop_details}"
@@ -201,85 +148,32 @@ class AnthropicExtractor:
         """Attachments first, then the text. Documents read better placed before the prompt."""
         media: list[Any] = []
 
-        if self._settings.enable_vision:
-            # Attachments earn their tokens when the text is thin, or when a PDF is present
-            # at all - e-tickets and boarding passes carry the real detail in the PDF.
-            text_is_thin = len(doc.body_text) < 400 and not doc.has_structured_source
-            encoded_total = 0
+        # Attachments earn their tokens when the text is thin, or when a PDF is present
+        # at all - e-tickets and boarding passes carry the real detail in the PDF.
+        text_is_thin = len(doc.body_text) < 400 and not doc.has_structured_source
+        encoded_total = 0
 
-            for attachment in doc.attachments:
-                if attachment.is_pdf:
-                    block_type, media_type = "document", "application/pdf"
-                elif attachment.is_image and text_is_thin:
-                    block_type, media_type = "image", attachment.media_type
-                else:
-                    continue
+        for attachment in doc.attachments:
+            if attachment.is_pdf:
+                block_type, media_type = "document", "application/pdf"
+            elif attachment.is_image and text_is_thin:
+                block_type, media_type = "image", attachment.media_type
+            else:
+                continue
 
-                encoded = base64.standard_b64encode(attachment.data).decode()
-                # The API caps a request at 32 MB and base64 inflates by 4/3, so a handful
-                # of large PDFs would 413. Stop well short rather than lose the email.
-                if encoded_total + len(encoded) > MAX_TOTAL_ENCODED_BYTES:
-                    log.warning("skipping %s: attachment budget exhausted", attachment.filename)
-                    continue
-                encoded_total += len(encoded)
+            encoded = base64.standard_b64encode(attachment.data).decode()
+            # The API caps a request at 32 MB and base64 inflates by 4/3, so a handful
+            # of large PDFs would 413. Stop well short rather than lose the email.
+            if encoded_total + len(encoded) > MAX_TOTAL_ENCODED_BYTES:
+                log.warning("skipping %s: attachment budget exhausted", attachment.filename)
+                continue
+            encoded_total += len(encoded)
 
-                media.append(
-                    {
-                        "type": block_type,
-                        "source": {"type": "base64", "media_type": media_type, "data": encoded},
-                    }
-                )
-
-        return [*media, {"type": "text", "text": render_email(doc, self._settings)}]
-
-
-class OllamaExtractor:
-    """A local model, free and private, reading text only.
-
-    PDF attachments contribute their text layer, so an e-ticket with an empty body still
-    shows the model its flight. Scanned tickets and image attachments carry no text and
-    will come back with nothing - which the user is told about rather than losing.
-    """
-
-    def __init__(self, settings: Settings, client: httpx.Client | None = None) -> None:
-        self._settings = settings
-        self._client = client or httpx.Client(
-            base_url=settings.ollama_url,
-            # Connect fast or fail fast; the generous budget is for generation.
-            timeout=httpx.Timeout(settings.ollama_timeout_seconds, connect=10.0),
-        )
-
-    def extract(self, doc: EmailDocument) -> ExtractionResult:
-        settings = self._settings
-        payload: dict[str, Any] = {
-            "model": settings.ollama_model,
-            "stream": False,
-            "keep_alive": settings.ollama_keep_alive,
-            "format": ExtractionResult.model_json_schema(),
-            "options": {"num_ctx": settings.ollama_num_ctx},
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT + categories_block(settings)},
+            media.append(
                 {
-                    "role": "user",
-                    "content": render_email(doc, settings, pdf_texts=_pdf_texts(doc)),
-                },
-            ],
-        }
-        try:
-            response = self._client.post("/api/chat", json=payload)
-        except httpx.HTTPError as exc:
-            raise ExtractionFailed(f"cannot reach Ollama at {settings.ollama_url}: {exc}") from exc
-        if response.status_code == 404:
-            raise ExtractionFailed(
-                f"Ollama has no model {settings.ollama_model!r}; "
-                f"run: ollama pull {settings.ollama_model}"
+                    "type": block_type,
+                    "source": {"type": "base64", "media_type": media_type, "data": encoded},
+                }
             )
-        if response.status_code >= 400:
-            raise ExtractionFailed(f"Ollama error {response.status_code}: {response.text[:300]}")
-        content = str(response.json().get("message", {}).get("content", ""))
-        try:
-            return ExtractionResult.model_validate_json(content)
-        except ValueError as exc:
-            raise ExtractionFailed(
-                f"{settings.ollama_model} returned unusable JSON: {exc}"
-            ) from exc
+
+        return [*media, {"type": "text", "text": render_email(doc, self._prefs)}]

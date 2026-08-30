@@ -14,6 +14,7 @@ from typing import Protocol
 import httpx
 
 from .config import Settings
+from .prefs import Prefs
 
 log = logging.getLogger(__name__)
 
@@ -41,11 +42,14 @@ class Notifier:
     processing, so send failures are logged and swallowed.
     """
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, prefs: Prefs) -> None:
         self._settings = settings
+        self._prefs = prefs
 
     def created(self, events: Sequence[Written], link: str | None) -> None:
         """One push per email, however many events and calendars it produced."""
+        if not (self._prefs.notifications_enabled and self._prefs.notify_events):
+            return
         count = "Event added" if len(events) == 1 else f"{len(events)} events added"
         calendars = {event.calendar for event in events}
 
@@ -62,6 +66,8 @@ class Notifier:
         self._send(title, "\n".join(lines), priority=-1, link=link, link_title="Open in Calendar")
 
     def failed(self, subject: str, detail: str, link: str | None) -> None:
+        if not (self._prefs.notifications_enabled and self._prefs.notify_failures):
+            return
         self._send(
             f"Couldn't process: {subject}"[:250],
             detail,
@@ -78,11 +84,11 @@ class Notifier:
         self, title: str, message: str, *, priority: int, link: str | None, link_title: str
     ) -> None:
         settings = self._settings
-        if not settings.pushover_user or not settings.pushover_token:
+        if not settings.pushover_configured:
             return
         payload = {
             "token": settings.pushover_token,
-            "user": settings.pushover_user,
+            "user": settings.pushover_user_key,
             "title": title,
             "message": message[:MAX_MESSAGE_LENGTH],
             "priority": priority,
@@ -105,7 +111,7 @@ def validate_keys(settings: Settings) -> str:
     """
     response = httpx.post(
         VALIDATE_URL,
-        data={"token": settings.pushover_token, "user": settings.pushover_user},
+        data={"token": settings.pushover_token, "user": settings.pushover_user_key},
         timeout=10,
     )
     payload = response.json()

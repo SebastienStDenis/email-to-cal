@@ -1,6 +1,6 @@
 """Orchestration: flagged mail in, calendar events out.
 
-One pass over the account per interval. Every red-flagged message is read, turned into
+One pass over the account per interval. Every flagged message is read, turned into
 events, and unflagged. A message that fails keeps its flag - so it stays visible in Mail
 - and is retried a couple of times before the service stops trying and says so.
 """
@@ -14,15 +14,20 @@ import time
 import anthropic
 
 from .cal import BuiltEvent, CalendarClient, CalendarUnavailable, build_ical, mail_link
-from .config import Settings
-from .llm import Extractor, make_extractor
+from .config import STATE_FILE, Settings
+from .llm import Extractor
 from .mailbox import AuthenticationFatal, FlaggedMail, Mailbox, sleep_with_backoff
 from .mime import parse_email
 from .notify import Notifier
+from .prefs import Prefs
 from .schema import EmailDocument
 from .store import Failure, Store
 
 log = logging.getLogger(__name__)
+
+# Every folder is searched on every pass, so this is the delay between a flag going on
+# and the event appearing. Below a minute iCloud starts refusing connections.
+POLL_INTERVAL_SECONDS = 60.0
 
 # How long to wait before each retry of a message that failed for a transient reason.
 # One more failure than there are delays here and the service gives up on the message.
@@ -38,13 +43,13 @@ class Pipeline:
 
     def __init__(
         self,
-        settings: Settings,
+        prefs: Prefs,
         store: Store,
         extractor: Extractor,
         calendar: CalendarClient,
         calendar_urls: dict[str, str],
     ) -> None:
-        self._settings = settings
+        self._prefs = prefs
         self._store = store
         self._extractor = extractor
         self._calendar = calendar
@@ -66,30 +71,30 @@ class Pipeline:
 
         written = []
         for event in result.events:
-            calendar_name = self._settings.calendar_for(event.category)
+            calendar_name = self._prefs.calendar_for(event.category)
             built = build_ical(
-                event, self._settings, message_id=doc.message_id, calendar=calendar_name
+                event, self._prefs, message_id=doc.message_id, calendar=calendar_name
             )
             self._calendar.put(self._calendar_urls[calendar_name], built.uid, built.ics)
-            self._store.record_event(
-                built.uid, doc.message_id, built.title, built.starts_at.isoformat()
-            )
+            # An all-day event is stored by its day alone, so the page can say it that way.
+            starts_at = built.starts_at.date() if built.all_day else built.starts_at
+            self._store.record_event(built.uid, doc.message_id, built.title, starts_at.isoformat())
             log.info("wrote %r to %r (%s)", built.title, calendar_name, built.uid)
             written.append(built)
         return written
 
 
-def run(settings: Settings, stopping: threading.Event) -> None:
+def run(settings: Settings, prefs: Prefs, stopping: threading.Event) -> None:
     """Main loop: connect, sweep every folder for flags, sleep, repeat.
 
     `stopping` is owned by the caller: the CLI sets it from signal handlers, the portal
-    sets it to restart the watcher after a config change.
+    sets it to restart the watcher after a settings change.
     """
-    notifier = Notifier(settings)
-    with Store(settings.state_db) as store:
+    notifier = Notifier(settings, prefs)
+    with Store(STATE_FILE) as store:
         calendar = CalendarClient(settings)
         try:
-            calendar_urls = calendar.resolve(settings.calendars)
+            calendar_urls = calendar.resolve(prefs.calendars)
         except CalendarUnavailable as exc:
             log.critical("cannot open the calendars", exc_info=True)
             notifier.fatal(str(exc))
@@ -97,8 +102,8 @@ def run(settings: Settings, stopping: threading.Event) -> None:
         for name, url in sorted(calendar_urls.items()):
             log.info("calendar %r -> %s", name, url)
 
-        pipeline = Pipeline(settings, store, make_extractor(settings), calendar, calendar_urls)
-        mailbox = Mailbox(settings)
+        pipeline = Pipeline(prefs, store, Extractor(settings, prefs), calendar, calendar_urls)
+        mailbox = Mailbox(settings, prefs.flag_colour)
         attempt = 0
         store.beat()
 
@@ -106,19 +111,21 @@ def run(settings: Settings, stopping: threading.Event) -> None:
             try:
                 mailbox.connect()
                 while not stopping.is_set():
+                    seen: set[str] = set()
                     for mail in mailbox.flagged():
                         if stopping.is_set():
                             break
-                        _handle(settings, pipeline, mailbox, store, notifier, mail)
+                        seen.add(_handle(pipeline, mailbox, store, notifier, mail))
                         # Beat per message: a long backlog is healthy, not wedged.
                         store.beat()
+                    store.prune_dismissed(seen)
                     store.beat()
                     # Only a completed pass counts as progress. Resetting on connect
                     # alone would pin the backoff at its first rung when the failure is
                     # downstream of login, which is exactly the reconnect storm iCloud
                     # punishes.
                     attempt = 0
-                    stopping.wait(settings.poll_interval_seconds)
+                    stopping.wait(POLL_INTERVAL_SECONDS)
             except AuthenticationFatal as exc:
                 log.critical("fatal authentication failure", exc_info=True)
                 notifier.fatal(str(exc))
@@ -136,22 +143,27 @@ def run(settings: Settings, stopping: threading.Event) -> None:
 
 
 def _handle(
-    settings: Settings,
     pipeline: Pipeline,
     mailbox: Mailbox,
     store: Store,
     notifier: Notifier,
     mail: FlaggedMail,
-) -> None:
+) -> str:
     """Process one flagged message, then clear its flag or record why it stayed on.
 
     Credential failures are never swallowed: quietly skipping them would leave every
     flagged email unanswered until someone noticed, so they stop the service instead.
+    Returns the message id, so the pass knows what it saw.
     """
-    doc = parse_email(mail.raw, max_attachment_bytes=settings.max_attachment_bytes)
+    doc = parse_email(mail.raw)
+    if store.is_dismissed(doc.message_id):
+        # Given up on from the page: the flag comes off without the email being read.
+        mailbox.unflag(mail)
+        store.forget_dismissed(doc.message_id)
+        return doc.message_id
     previous = store.failure(doc.message_id)
     if previous is not None and not _due(previous):
-        return
+        return doc.message_id
 
     link = mail_link(doc.message_id)
     try:
@@ -173,6 +185,7 @@ def _handle(
         # The push lands on the event itself: the calendar, on the day it happens. The
         # way back to the email is the link on the event.
         notifier.created(written, written[0].calendar_link)
+    return doc.message_id
 
 
 def _due(failure: Failure) -> bool:

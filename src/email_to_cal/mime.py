@@ -29,6 +29,8 @@ log = logging.getLogger(__name__)
 VISION_IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
 # Marks Message-IDs we invented ourselves; they name no message a mail client could open.
 SYNTHETIC_ID_DOMAIN = "email-to-cal.local"
+# Past this an attachment is a video or a scan of a whole brochure, not a ticket.
+MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
 _RESERVATION_TYPES = {
     "FlightReservation",
     "EventReservation",
@@ -135,7 +137,7 @@ def _is_calendar_part(part: EmailMessage) -> bool:
     return filename.lower().endswith(".ics")
 
 
-def parse_email(raw: bytes, *, max_attachment_bytes: int) -> EmailDocument:
+def parse_email(raw: bytes, *, max_attachment_bytes: int = MAX_ATTACHMENT_BYTES) -> EmailDocument:
     """Flatten a raw message into everything downstream stages might use."""
     message = message_from_bytes(raw, policy=policy.default)
 

@@ -26,10 +26,13 @@ from icalendar import Calendar, Event
 from .config import Settings
 from .mime import SYNTHETIC_ID_DOMAIN
 from .places import resolve_address
+from .prefs import Prefs
 from .schema import ExtractedEvent
 from .timezones import localise, parse_naive, resolve_zones
 
 log = logging.getLogger(__name__)
+
+CALDAV_URL = "https://caldav.icloud.com"
 
 DAV = "DAV:"
 CALDAV = "urn:ietf:params:xml:ns:caldav"
@@ -120,7 +123,7 @@ class BuiltEvent:
 
 
 def build_ical(
-    event: ExtractedEvent, settings: Settings, *, message_id: str, calendar: str = ""
+    event: ExtractedEvent, prefs: Prefs, *, message_id: str, calendar: str = ""
 ) -> BuiltEvent:
     """Render one extracted event as a single-event iCalendar object."""
     address = resolve_address(event)
@@ -130,7 +133,7 @@ def build_ical(
         departure_iata=event.departure_iata,
         arrival_iata=event.arrival_iata,
         location=address,
-        default_timezone=settings.default_timezone,
+        default_timezone=prefs.timezone,
     )
 
     start_value = parse_naive(event.start_local)
@@ -212,7 +215,7 @@ class CalendarClient:
     def __init__(self, settings: Settings, client: httpx.Client | None = None) -> None:
         self._settings = settings
         self._client = client or httpx.Client(
-            auth=(settings.apple_id, settings.apple_password),
+            auth=(settings.icloud_email, settings.icloud_app_password),
             timeout=30.0,
             follow_redirects=True,
             headers={"User-Agent": "email-to-cal"},
@@ -254,9 +257,7 @@ class CalendarClient:
 
     def calendars(self) -> dict[str, str]:
         """Every writable calendar that holds events, by display name."""
-        principal = self._find_href(
-            self._settings.caldav_url, _PRINCIPAL_BODY, f"{{{DAV}}}current-user-principal"
-        )
+        principal = self._find_href(CALDAV_URL, _PRINCIPAL_BODY, f"{{{DAV}}}current-user-principal")
         home = self._find_href(principal, _HOME_BODY, f"{{{CALDAV}}}calendar-home-set")
 
         found: dict[str, str] = {}

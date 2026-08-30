@@ -8,6 +8,7 @@ import pytest
 
 from email_to_cal.config import Settings
 from email_to_cal.notify import Notifier, validate_keys
+from email_to_cal.prefs import Prefs
 
 
 class RecordingPost:
@@ -25,7 +26,18 @@ class RecordingPost:
 
 
 def configured(**overrides: Any) -> Settings:
-    return Settings(pushover_user="u", pushover_token="t", **overrides)
+    return Settings(pushover_user_key="u", pushover_token="t", **overrides)
+
+
+def notifier(settings: Settings | None = None, **switches: bool) -> Notifier:
+    return Notifier(settings or configured(), Prefs(notifications_enabled=True, **switches))
+
+
+@pytest.fixture
+def post(monkeypatch: pytest.MonkeyPatch) -> RecordingPost:
+    recording = RecordingPost()
+    monkeypatch.setattr(httpx, "post", recording)
+    return recording
 
 
 @dataclass
@@ -39,27 +51,41 @@ class FakeWritten:
         return self.line
 
 
-def test_nothing_is_sent_until_both_keys_are_configured(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    post = RecordingPost()
-    monkeypatch.setattr(httpx, "post", post)
-
-    Notifier(Settings(pushover_user="u")).created([FakeWritten("e", "Bookings")], None)
-    Notifier(Settings(pushover_token="t")).failed("s", "d", None)
+def test_nothing_is_sent_until_both_keys_are_configured(post: RecordingPost) -> None:
+    notifier(Settings(pushover_user_key="u")).created([FakeWritten("e", "Bookings")], None)
+    notifier(Settings(pushover_token="t")).failed("s", "d", None)
 
     assert post.calls == []
 
 
-def test_a_created_event_pushes_quietly_and_opens_the_calendar(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    post = RecordingPost()
-    monkeypatch.setattr(httpx, "post", post)
+def test_nothing_about_an_email_is_sent_while_notifications_are_off(post: RecordingPost) -> None:
+    quiet = Notifier(configured(), Prefs())
 
-    Notifier(configured()).created(
-        [FakeWritten("Radiohead - Mon 14 Sep 20:00", "Bookings")], "calshow:123"
-    )
+    quiet.created([FakeWritten("e", "Bookings")], None)
+    quiet.failed("s", "d", None)
+
+    # Connecting Pushover is not the same as asking to be pushed at.
+    assert post.calls == []
+
+
+def test_each_outcome_has_its_own_switch(post: RecordingPost) -> None:
+    notifier(notify_events=False).created([FakeWritten("e", "Bookings")], None)
+    notifier(notify_failures=False).failed("s", "d", None)
+    assert post.calls == []
+
+    notifier(notify_failures=False).created([FakeWritten("e", "Bookings")], None)
+    notifier(notify_events=False).failed("s", "d", None)
+    assert len(post.calls) == 2
+
+
+def test_a_stopped_service_is_pushed_whatever_the_switches_say(post: RecordingPost) -> None:
+    # This is how somebody finds out nothing is being read.
+    Notifier(configured(), Prefs()).fatal("iCloud rejected the credentials")
+    assert len(post.calls) == 1
+
+
+def test_a_created_event_pushes_quietly_and_opens_the_calendar(post: RecordingPost) -> None:
+    notifier().created([FakeWritten("Radiohead - Mon 14 Sep 20:00", "Bookings")], "calshow:123")
 
     sent = post.calls[0]
     # Quiet: an email that books something at 3am should not wake anyone.
@@ -69,11 +95,8 @@ def test_a_created_event_pushes_quietly_and_opens_the_calendar(
     assert sent["url_title"] == "Open in Calendar"
 
 
-def test_several_events_are_one_push_not_several(monkeypatch: pytest.MonkeyPatch) -> None:
-    post = RecordingPost()
-    monkeypatch.setattr(httpx, "post", post)
-
-    Notifier(configured()).created(
+def test_several_events_are_one_push_not_several(post: RecordingPost) -> None:
+    notifier().created(
         [FakeWritten("Outbound", "Bookings"), FakeWritten("Return", "Bookings")], "calshow:1"
     )
 
@@ -82,13 +105,8 @@ def test_several_events_are_one_push_not_several(monkeypatch: pytest.MonkeyPatch
     assert post.calls[0]["message"] == "Outbound\nReturn"
 
 
-def test_events_on_different_calendars_are_named_per_line(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    post = RecordingPost()
-    monkeypatch.setattr(httpx, "post", post)
-
-    Notifier(configured()).created(
+def test_events_on_different_calendars_are_named_per_line(post: RecordingPost) -> None:
+    notifier().created(
         [FakeWritten("LX318", "Travel"), FakeWritten("Radiohead", "Music")], "calshow:1"
     )
 
@@ -98,11 +116,8 @@ def test_events_on_different_calendars_are_named_per_line(
     assert sent["message"] == "LX318 → Travel\nRadiohead → Music"
 
 
-def test_a_failure_pushes_a_way_back_to_the_email(monkeypatch: pytest.MonkeyPatch) -> None:
-    post = RecordingPost()
-    monkeypatch.setattr(httpx, "post", post)
-
-    Notifier(configured()).failed("Your booking", "no events found", "message://%3Ca@b%3E")
+def test_a_failure_pushes_a_way_back_to_the_email(post: RecordingPost) -> None:
+    notifier().failed("Your booking", "no events found", "message://%3Ca@b%3E")
 
     sent = post.calls[0]
     assert sent["priority"] == 0
@@ -112,23 +127,15 @@ def test_a_failure_pushes_a_way_back_to_the_email(monkeypatch: pytest.MonkeyPatc
     assert sent["url_title"] == "Open the email"
 
 
-def test_a_stopped_service_pushes_at_high_priority(monkeypatch: pytest.MonkeyPatch) -> None:
-    post = RecordingPost()
-    monkeypatch.setattr(httpx, "post", post)
-
-    Notifier(configured()).fatal("iCloud rejected the credentials")
+def test_a_stopped_service_pushes_at_high_priority(post: RecordingPost) -> None:
+    notifier().fatal("iCloud rejected the credentials")
 
     assert post.calls[0]["priority"] == 1
     assert "url" not in post.calls[0]
 
 
-def test_an_oversized_link_is_dropped_so_the_push_still_arrives(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    post = RecordingPost()
-    monkeypatch.setattr(httpx, "post", post)
-
-    Notifier(configured()).failed("Your booking", "no events found", "message://" + "9" * 512)
+def test_an_oversized_link_is_dropped_so_the_push_still_arrives(post: RecordingPost) -> None:
+    notifier().failed("Your booking", "no events found", "message://" + "9" * 512)
 
     # Pushover rejects the whole request over an oversized url, which would lose the
     # only report a failure gets.
@@ -137,11 +144,8 @@ def test_an_oversized_link_is_dropped_so_the_push_still_arrives(
     assert sent["message"] == "no events found"
 
 
-def test_oversized_messages_are_truncated_not_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
-    post = RecordingPost()
-    monkeypatch.setattr(httpx, "post", post)
-
-    Notifier(configured()).failed("s", "x" * 5000, None)
+def test_oversized_messages_are_truncated_not_dropped(post: RecordingPost) -> None:
+    notifier().failed("s", "x" * 5000, None)
 
     # Pushover rejects a longer message outright; a truncated alert still arrives.
     assert len(post.calls[0]["message"]) == 1024
@@ -154,7 +158,7 @@ def test_send_failures_never_propagate(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(httpx, "post", explode)
 
     # A notification outage must never stall or fail mail processing.
-    Notifier(configured()).created([FakeWritten("e", "Bookings")], None)
+    notifier().created([FakeWritten("e", "Bookings")], None)
 
 
 def test_validate_keys_reports_the_registered_devices(monkeypatch: pytest.MonkeyPatch) -> None:

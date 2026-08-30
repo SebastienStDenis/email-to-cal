@@ -8,6 +8,7 @@ import pytest
 
 from email_to_cal.cal import CalendarClient, CalendarUnavailable, build_ical, event_uid
 from email_to_cal.config import Settings
+from email_to_cal.prefs import Prefs
 from email_to_cal.schema import EventLocation, ExtractedEvent
 
 
@@ -25,9 +26,9 @@ def flight() -> ExtractedEvent:
     )
 
 
-def ical_text(event: ExtractedEvent, settings: Settings, message_id: str = "<a@b>") -> str:
+def ical_text(event: ExtractedEvent, preferences: Prefs, message_id: str = "<a@b>") -> str:
     # Folded lines would split property values mid-word and defeat plain substring checks.
-    return build_ical(event, settings, message_id=message_id).ics.decode().replace("\r\n ", "")
+    return build_ical(event, preferences, message_id=message_id).ics.decode().replace("\r\n ", "")
 
 
 def test_uid_is_stable_and_tracks_the_event() -> None:
@@ -39,8 +40,8 @@ def test_uid_is_stable_and_tracks_the_event() -> None:
     assert event_uid("<c@d>", flight()) != event_uid("<a@b>", flight())
 
 
-def test_flight_gets_each_leg_in_its_own_timezone(settings: Settings) -> None:
-    text = ical_text(flight(), settings)
+def test_flight_gets_each_leg_in_its_own_timezone(preferences: Prefs) -> None:
+    text = ical_text(flight(), preferences)
     assert "DTSTART;TZID=Asia/Tokyo:20260914T183500" in text
     assert "DTEND;TZID=America/Los_Angeles:20260914T112500" in text
     # A TZID nobody defined renders as UTC in most clients, which silently moves the event.
@@ -48,29 +49,29 @@ def test_flight_gets_each_leg_in_its_own_timezone(settings: Settings) -> None:
     assert "TZID:America/Los_Angeles" in text
 
 
-def test_flight_location_is_a_geocodable_airport_address(settings: Settings) -> None:
+def test_flight_location_is_a_geocodable_airport_address(preferences: Prefs) -> None:
     # "HND" and "Tokyo Haneda" resolve to nothing on a map; this resolves to the airport.
     # Commas inside a TEXT value are escaped, which is how a client tells them from the
     # separators between several values.
-    assert r"LOCATION:Tokyo International Airport\, Tokyo\, JP" in ical_text(flight(), settings)
+    assert r"LOCATION:Tokyo International Airport\, Tokyo\, JP" in ical_text(flight(), preferences)
 
 
-def test_all_day_event_ends_the_next_morning(settings: Settings) -> None:
+def test_all_day_event_ends_the_next_morning(preferences: Prefs) -> None:
     event = ExtractedEvent(
         kind="other", title="Museum entry", all_day=True, start_local="2026-08-22"
     )
-    text = ical_text(event, settings)
+    text = ical_text(event, preferences)
     # DTEND is exclusive for dates: a same-day end would give a zero-length event.
     assert "DTSTART;VALUE=DATE:20260822" in text
     assert "DTEND;VALUE=DATE:20260823" in text
 
 
-def test_a_date_only_start_is_all_day_whatever_the_flag_says(settings: Settings) -> None:
+def test_a_date_only_start_is_all_day_whatever_the_flag_says(preferences: Prefs) -> None:
     event = ExtractedEvent(kind="other", title="Festival", all_day=False, start_local="2026-08-22")
-    assert "DTSTART;VALUE=DATE:20260822" in ical_text(event, settings)
+    assert "DTSTART;VALUE=DATE:20260822" in ical_text(event, preferences)
 
 
-def test_missing_end_gets_a_one_hour_default(settings: Settings) -> None:
+def test_missing_end_gets_a_one_hour_default(preferences: Prefs) -> None:
     event = ExtractedEvent(
         kind="restaurant",
         title="Dinner at Kadeau",
@@ -78,26 +79,26 @@ def test_missing_end_gets_a_one_hour_default(settings: Settings) -> None:
         start_local="2026-08-22T19:30:00",
         start_tz="Europe/Copenhagen",
     )
-    text = ical_text(event, settings)
+    text = ical_text(event, preferences)
     assert "DTSTART;TZID=Europe/Copenhagen:20260822T193000" in text
     assert "DTEND;TZID=Europe/Copenhagen:20260822T203000" in text
 
 
-def test_the_event_links_back_to_the_email(settings: Settings) -> None:
-    text = ical_text(flight(), settings, message_id="<abc@mail.example>")
+def test_the_event_links_back_to_the_email(preferences: Prefs) -> None:
+    text = ical_text(flight(), preferences, message_id="<abc@mail.example>")
     assert "URL:message://%3Cabc@mail.example%3E" in text
     assert "Open in Apple Mail: message://%3Cabc@mail.example%3E" in text
     assert "Booking reference: K3TQ9P" in text
 
 
-def test_invented_message_ids_get_no_mail_link(settings: Settings) -> None:
+def test_invented_message_ids_get_no_mail_link(preferences: Prefs) -> None:
     # A synthetic id names no message, so a link built from it would open nothing.
-    text = ical_text(flight(), settings, message_id="<x@email-to-cal.local>")
+    text = ical_text(flight(), preferences, message_id="<x@email-to-cal.local>")
     assert "URL:" not in text
     assert "message://" not in text
 
 
-def test_location_without_an_address_still_names_the_venue(settings: Settings) -> None:
+def test_location_without_an_address_still_names_the_venue(preferences: Prefs) -> None:
     event = ExtractedEvent(
         kind="concert",
         title="Radiohead",
@@ -105,11 +106,11 @@ def test_location_without_an_address_still_names_the_venue(settings: Settings) -
         start_local="2026-08-22T20:00:00",
         location=EventLocation(name="The O2 Arena", locality="London", country="GB"),
     )
-    assert r"LOCATION:The O2 Arena\, London\, GB" in ical_text(event, settings)
+    assert r"LOCATION:The O2 Arena\, London\, GB" in ical_text(event, preferences)
 
 
-def test_notification_link_opens_the_calendar_on_the_day(settings: Settings) -> None:
-    built = build_ical(flight(), settings, message_id="<a@b>")
+def test_notification_link_opens_the_calendar_on_the_day(preferences: Prefs) -> None:
+    built = build_ical(flight(), preferences, message_id="<a@b>")
     assert built.starts_at.isoformat() == "2026-09-14T18:35:00+09:00"
     assert built.describe() == "NH106 HND to LAX - Mon 14 Sep 18:35"
 
@@ -120,11 +121,11 @@ def test_notification_link_opens_the_calendar_on_the_day(settings: Settings) -> 
     assert built.calendar_link == f"calshow:{int(noon_in_tokyo.timestamp() - 978307200)}"
 
 
-def test_an_all_day_event_is_linked_by_its_own_morning(settings: Settings) -> None:
+def test_an_all_day_event_is_linked_by_its_own_morning(preferences: Prefs) -> None:
     event = ExtractedEvent(
         kind="other", title="Museum entry", all_day=True, start_local="2026-08-22"
     )
-    built = build_ical(event, settings, message_id="<a@b>")
+    built = build_ical(event, preferences, message_id="<a@b>")
     # Local midnight where the event is, not the server's - otherwise the link can
     # land on the day before.
     assert built.starts_at.isoformat() == "2026-08-22T00:00:00+02:00"
@@ -219,10 +220,10 @@ def test_one_bad_name_fails_the_whole_resolve(settings: Settings) -> None:
         caldav_client(settings, []).resolve(["Bookings", "Holidays"])
 
 
-def test_writing_an_event_puts_it_under_its_own_uid(settings: Settings) -> None:
+def test_writing_an_event_puts_it_under_its_own_uid(settings: Settings, preferences: Prefs) -> None:
     requests: list[httpx.Request] = []
     client = caldav_client(settings, requests)
-    built = build_ical(flight(), settings, message_id="<a@b>")
+    built = build_ical(flight(), preferences, message_id="<a@b>")
 
     client.put("https://p01-caldav.icloud.com/1234/calendars/home/", built.uid, built.ics)
 
