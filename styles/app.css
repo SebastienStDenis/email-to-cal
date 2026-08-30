@@ -190,6 +190,24 @@
   .badge[data-variant='warn']  { --tone: var(--warn); }
   .badge[data-variant='stop']  { --tone: var(--stop); }
 
+  /* A value wearing the shape of a small button without being one - the version row's
+     inactive chips. Cut to the same height and corner as an xs button so the one real
+     button among them reads as the active member of the family, and toned the way the
+     badges are so the colour still says the state; what says "not pressable" is the
+     flat wash where the button has its solid ink. */
+  .chip {
+    @apply inline-flex h-6 shrink-0 items-center gap-1 border px-2 text-xs
+      font-medium whitespace-nowrap transition-colors;
+    border-radius: min(var(--radius-md), 8px);
+    background-color: color-mix(in oklab, var(--tone, var(--quiet)) 10%, var(--card));
+    border-color: color-mix(in oklab, var(--tone, var(--quiet)) 25%, transparent);
+    color: var(--tone, var(--quiet));
+  }
+
+  .chip[data-tone='quiet'] { --tone: var(--quiet); }
+  .chip[data-tone='ok']    { --tone: var(--ok); }
+  .chip[data-tone='warn']  { --tone: var(--warn); }
+
   /* A shade over the button's own 1rem: the buttons are wide enough for a thumb, and a
      glyph drawn to the full width of one reads as a slab rather than as a sign. The size
      is set here rather than by a utility on each <svg>, because a size- class on the
@@ -296,8 +314,9 @@
   /* A card that opens onto a divided list starts it where any other content would start.
      The rows carry their own padding so that a divider sits centred between two of them,
      and on the first row that padding lands on top of the card's own gap and reads as a
-     hole under the heading. */
-  .card > header + section > .divide-y {
+     hole under the heading. An Advanced heading is a heading too. */
+  .card > header + section > .divide-y,
+  .accordion-tight > details > summary + .divide-y {
     @apply -mt-3 -mb-3;
   }
 
@@ -381,11 +400,27 @@
 
   /* Basecoat animates the height a disclosure opens to but leaves what is inside it
      standing at full height, so a section folding away spills out of the box closing
-     over it. Clipped rather than hidden so the edge can be given a margin: the ring
-     drawn around a focused box sits outside that box. */
+     over it: the frame shrinks, and then the contents disappear where they stand.
+
+     The clip cannot sit on the box exactly: a control inside a disclosure is as wide
+     as the disclosure, and the ring drawn around a focused one sits outside its own
+     box - cut at the box, a focused field loses its ring on every side it touches.
+     The room is a padding the margins take straight back, rather than an
+     overflow-clip-margin, which Safari does not carry: the box reaches 4px past its
+     contents on every side while standing exactly where it stood, and the clip edge
+     - the padding edge - now passes outside the rings instead of through them. */
   details::details-content {
     overflow: clip;
-    overflow-clip-margin: 4px;
+    padding: 4px;
+    margin: -4px;
+  }
+
+  /* Basecoat also clips every child of an accordion's disclosure where it stands,
+     which cuts the same rings the rule above just made room for - the Log level
+     picker's under Preferences → Advanced among them. The fold is already held in
+     by the clip on the disclosure itself, so its children have nothing to clip. */
+  .accordion > details > :not(summary) {
+    overflow: visible;
   }
 
   /* Basecoat underlines a summary on hover, which is how it marks a link. These open
@@ -394,14 +429,17 @@
     @apply no-underline;
   }
 
-  /* Basecoat sizes its accordion for a page of prose. Here a disclosure sits inside a
-     card, where that much air reads as a gap rather than as grouping. */
+  /* An Advanced box is a card whose heading is its whole header: the same 16px in from
+     every edge, 16px between the heading and what is under it, and 16px under that.
+     Basecoat's paddings already say so; what it adds is a transparent border on the
+     summary for its focus ring to colour, which stands the heading a pixel further in
+     than a card's title. The ring draws without it. */
+  /* Centred, because Basecoat starts its chevron at the top of the first line for a
+     summary that runs to several. Every one of these is a single phrase, and against
+     one line the arrow sits high by half the difference between its 16px and the line
+     it is meant to be pointing at. */
   .accordion-tight > details > summary {
-    @apply items-center py-2.5;
-  }
-
-  .accordion-tight > details > :not(summary) {
-    @apply pb-3;
+    @apply items-center border-0;
   }
 
   /* Waiting on a service to answer: the picker that is being filled, and the button
@@ -420,13 +458,15 @@
     border-top-color: currentColor;
   }
 
-  /* A refresh icon asked to wait steps aside for a plain spinner: the icon goes and
-     the circle stands where it stood, so an icon-sized button stays icon-sized. */
-  .btn.refresh-button.is-busy::before {
+  /* A button asked to wait becomes its own spinner: the icon steps aside and the
+     circle stands where it stood - the refresh arrows while a check runs, the update
+     arrow while Watchtower pulls the new build. The button's own gap spaces the
+     circle off any words beside it, so no margin of its own. */
+  .btn.busy-swap.is-busy::before {
     @apply mr-0;
   }
 
-  .btn.refresh-button.is-busy svg {
+  .btn.busy-swap.is-busy svg {
     @apply hidden;
   }
 

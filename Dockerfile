@@ -20,11 +20,13 @@ COPY --from=builder --chown=app:app /app /app
 RUN mkdir -p /app/data && chown app:app /app/data
 ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1
 
-# The commit this image was built from, stamped in by the release workflow so the
-# settings page can compare the running build with the registry's newest and offer an
-# update. Empty in a local build, which the page reads as "cannot say".
+# The commit this image was built from and the version number the release workflow
+# counted for it, stamped in so the settings page can compare the running build with
+# the registry's newest and offer an update under a readable name. Empty in a local
+# build, which the page reads as "cannot say".
 ARG GIT_SHA=""
-ENV EMAIL_TO_CAL_BUILD_SHA=$GIT_SHA
+ARG GIT_VERSION=""
+ENV EMAIL_TO_CAL_BUILD_SHA=$GIT_SHA EMAIL_TO_CAL_BUILD_VERSION=$GIT_VERSION
 
 USER app
 WORKDIR /app

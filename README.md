@@ -147,7 +147,10 @@ there is no notification server in the stack to keep alive.
    you land on.
 2. Register this service as an application at
    [pushover.net/apps/build](https://pushover.net/apps/build) - a name is all it asks
-   for - and copy the **API token** it hands back.
+   for - and copy the **API token** it hands back. It also takes a 72x72 PNG icon to
+   show beside each push; [`docs/pushover-icon-light.png`](docs/pushover-icon-light.png)
+   and [`docs/pushover-icon-dark.png`](docs/pushover-icon-dark.png) are this app's, in
+   both schemes.
 3. Install the Pushover app on the phone and sign in as the same user.
 
 Both go in the **Pushover** row on the Connections tab. It is the one connection that is
@@ -189,10 +192,6 @@ Then finish on **Preferences**:
 **Advanced**, on the same tab, holds the log level.
 
 Then flag an email.
-
-A `data/config.json` written by an earlier release is carried across on the first boot -
-its credentials into `data/secrets.env`, its preferences into the database - and renamed
-`config.json.imported`.
 
 If you would rather a deployment come up already knowing a credential, put it in the
 container's environment, either through an `environment:` block or a `.env` beside

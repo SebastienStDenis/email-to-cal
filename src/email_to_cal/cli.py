@@ -19,7 +19,6 @@ from .app import run
 from .cal import CalendarClient, build_ical
 from .checks import run_checks
 from .config import STATE_FILE, Settings
-from .legacy import import_legacy_config
 from .llm import Extractor
 from .mime import parse_email
 from .store import Store
@@ -178,7 +177,6 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     with Store(STATE_FILE) as store:
-        import_legacy_config(store)
         current = prefs.load(store)
     settings = Settings()
     _configure_logging(current.log_level)
