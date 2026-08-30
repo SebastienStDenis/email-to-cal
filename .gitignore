@@ -14,8 +14,17 @@ data/
 credentials.json
 token.json
 
-# Local overrides of the shipped examples.
-docker-compose.yml
+# The stylesheet is built from styles/ and committed; its toolchain is not.
+node_modules/
+
+# Local overrides of the shipped compose file.
+docker-compose.override.yml
 
 # Claude Code session workspaces.
 .claude/
+
+# macOS Finder metadata.
+.DS_Store
+
+# Screenshots the Playwright browser writes.
+.playwright-mcp/

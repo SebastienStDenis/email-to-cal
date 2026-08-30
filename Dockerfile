@@ -20,6 +20,12 @@ COPY --from=builder --chown=app:app /app /app
 RUN mkdir -p /app/data && chown app:app /app/data
 ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1
 
+# The commit this image was built from, stamped in by the release workflow so the
+# settings page can compare the running build with the registry's newest and offer an
+# update. Empty in a local build, which the page reads as "cannot say".
+ARG GIT_SHA=""
+ENV EMAIL_TO_CAL_BUILD_SHA=$GIT_SHA
+
 USER app
 WORKDIR /app
 # Mounted at /app/data rather than /data so the default relative paths resolve the same

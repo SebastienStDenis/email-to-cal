@@ -1,44 +1,61 @@
-"""Runtime configuration: the portal's config.json, overridable by environment variables."""
+"""Credentials, and the one file they live in.
+
+Configuration splits in two, and no value lives in both halves. A *credential* is a
+secret handed to another service: it is entered on the settings page, is never handed
+back out by it, and is stored in `data/secrets.env` beside the database. Everything else
+is a *preference*: it has a working default, it is edited on the same page, and the
+database is the only place it lives - see `prefs`.
+
+`data/secrets.env` outranks both the process environment and `.env`, which stay as an
+optional way to seed a deployment. A fresh container needs neither, and a credential
+typed into the settings page survives a restart of a container whose environment still
+carries the old one.
+"""
 
 from __future__ import annotations
 
-import json
+import os
+import stat
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Literal
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from typing import NamedTuple
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import Field
 from pydantic_settings import (
     BaseSettings,
-    JsonConfigSettingsSource,
+    DotEnvSettingsSource,
     PydanticBaseSettingsSource,
     SettingsConfigDict,
 )
 
-# Written by the web portal; relative so it lands in the mounted volume in the container
-# and in ./data locally, like every other runtime file.
-CONFIG_FILE = Path("data/config.json")
+# Relative on purpose: the image's WORKDIR is /app and the volume is mounted at
+# /app/data, so the same default is the volume in Docker and ./data in a checkout.
+DATA_DIR = Path(os.environ.get("DATA_DIR", "data"))
+SECRETS_FILE = DATA_DIR / "secrets.env"
+STATE_FILE = DATA_DIR / "state.sqlite"
 
 
-class CategoryRule(BaseModel):
-    """One (category, description, calendar) triple from the operator's config.
+class Service(NamedTuple):
+    """One account the settings page connects to, and the credentials it needs."""
 
-    The description is what the model reads, so it says what belongs in the category
-    rather than merely naming it.
-    """
+    key: str
+    name: str
+    fields: tuple[str, ...]
 
-    name: str = Field(min_length=1)
-    description: str = Field(min_length=1)
-    calendar: str = Field(min_length=1)
 
-    @field_validator("name")
-    @classmethod
-    def _normalise_name(cls, value: str) -> str:
-        return value.strip().lower()
+# What the settings page offers, in the order it offers it.
+SERVICES = (
+    Service("icloud", "iCloud", ("icloud_email", "icloud_app_password")),
+    Service("anthropic", "Anthropic", ("anthropic_api_key",)),
+    Service("pushover", "Pushover", ("pushover_token", "pushover_user_key")),
+    Service("watchtower", "Watchtower", ("watchtower_url", "watchtower_token")),
+)
+
+CREDENTIALS = tuple(name for service in SERVICES for name in service.fields)
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(json_file=CONFIG_FILE, extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     @classmethod
     def settings_customise_sources(
@@ -49,103 +66,75 @@ class Settings(BaseSettings):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
-        # config.json is what the portal writes; environment variables override it for
-        # one-off debugging (LOG_LEVEL=DEBUG email-to-cal run).
+        # The settings page writes data/secrets.env, so it outranks the environment and
+        # .env rather than being overridden by them: what somebody typed into the UI is
+        # newer than anything the container was started with, and an empty value there
+        # is how a credential is cleared for good.
         return (
             init_settings,
+            DotEnvSettingsSource(settings_cls, env_file=SECRETS_FILE, env_file_encoding="utf-8"),
             env_settings,
-            JsonConfigSettingsSource(settings_cls),
+            dotenv_settings,
             file_secret_settings,
         )
 
-    # One Apple ID and one app-specific password reach both the mail and the calendars.
-    apple_id: str = ""
-    apple_password: str = ""
-    imap_host: str = "imap.mail.me.com"
-    imap_port: int = 993
-    # Which colour of flag asks for an event. Only this one is processed, so the others
-    # keep whatever meaning they already have - red is left alone by default because it
-    # is the colour every Mail client reaches for first.
-    flag_colour: Literal["red", "orange", "yellow", "green", "blue", "purple", "grey"] = "blue"
-    # Every folder is searched on every pass, so this is the delay between a flag going
-    # on and the event appearing. Below a minute iCloud starts refusing connections.
-    poll_interval_seconds: int = Field(default=60, ge=60)
+    # --- iCloud, the mailbox we watch and the calendars we write ----------------------
+    # One app-specific password from appleid.apple.com covers both IMAP and CalDAV, and
+    # neither accepts the Apple ID password once two-factor authentication is on. The
+    # address is the account's name rather than a secret, so it is the one credential
+    # the settings page shows back.
+    icloud_email: str = ""
+    icloud_app_password: str = Field(default="", repr=False)
 
-    provider: Literal["anthropic", "ollama"] = "anthropic"
-    anthropic_api_key: str = ""
-    anthropic_model: str = "claude-opus-5"
-    anthropic_effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
-    ollama_url: str = "http://127.0.0.1:11434"
-    ollama_model: str = "gpt-oss:20b"
-    # Long emails would overflow Ollama's small default context, which silently
-    # truncates the top of the prompt - the extraction instructions - first.
-    ollama_num_ctx: int = Field(default=16384, ge=2048)
-    # CPU inference is slow; a short read timeout would abandon work about to finish.
-    ollama_timeout_seconds: float = Field(default=600.0, gt=0)
-    # Keep the model resident between emails so a burst of mail loads it once.
-    ollama_keep_alive: str = "30m"
+    # --- Anthropic, what reads the email ------------------------------------------------
+    anthropic_api_key: str = Field(default="", repr=False)
 
-    enable_vision: bool = True
-    # A negative value would make every attachment look oversized and silently vanish.
-    max_attachment_mb: float = Field(default=8.0, gt=0)
+    # --- Pushover, the phone ----------------------------------------------------------
+    # The token belongs to the application registered at pushover.net; the user key
+    # identifies the account every device of yours is signed in to.
+    pushover_token: str = Field(default="", repr=False)
+    pushover_user_key: str = Field(default="", repr=False)
 
-    caldav_url: str = "https://caldav.icloud.com"
-    # Where events land when they match no category. Every calendar named here or in a
-    # category has to exist already; the service never creates one.
-    default_calendar: str = ""
-    default_timezone: str = "UTC"
-    categories: list[CategoryRule] = []
-
-    # Both outcomes are pushed to the phone, so this is the only place a failure is
-    # reported. A no-op until both keys are configured.
-    pushover_user: str = ""
-    pushover_token: str = ""
-
-    state_db: Path = Path("data/state.sqlite")
-    log_level: str = "INFO"
-
-    @field_validator("categories", mode="before")
-    @classmethod
-    def _parse_categories(cls, value: Any) -> Any:
-        if isinstance(value, str):
-            stripped = value.strip()
-            return json.loads(stripped) if stripped else []
-        return value
-
-    @field_validator("default_timezone")
-    @classmethod
-    def _known_timezone(cls, value: str) -> str:
-        try:
-            ZoneInfo(value)
-        except ZoneInfoNotFoundError as exc:
-            raise ValueError(
-                f"{value!r} is not a recognised time zone; use a name like Europe/Zurich"
-            ) from exc
-        return value
-
-    @model_validator(mode="after")
-    def _unique_category_names(self) -> Settings:
-        seen: set[str] = set()
-        for rule in self.categories:
-            if rule.name in seen:
-                raise ValueError(f"duplicate category name {rule.name!r}")
-            seen.add(rule.name)
-        return self
+    # --- Watchtower, the updater --------------------------------------------------------
+    # The address is a name on the compose network and no more a secret than a hostname,
+    # so like the Apple ID it is the one half the settings page shows back; the token is
+    # whatever WATCHTOWER_HTTP_API_TOKEN was set to on that container.
+    watchtower_url: str = ""
+    watchtower_token: str = Field(default="", repr=False)
 
     @property
-    def max_attachment_bytes(self) -> int:
-        return int(self.max_attachment_mb * 1024 * 1024)
+    def icloud_configured(self) -> bool:
+        return bool(self.icloud_email and self.icloud_app_password)
 
     @property
-    def calendars(self) -> set[str]:
-        """Every calendar the service writes to, which all have to exist up front."""
-        return {self.default_calendar} | {rule.calendar for rule in self.categories}
+    def anthropic_configured(self) -> bool:
+        return bool(self.anthropic_api_key)
 
-    def calendar_for(self, category: str | None) -> str:
-        """Map an extracted category name onto a calendar, defaulting when unmatched."""
-        if category:
-            wanted = category.strip().lower()
-            for rule in self.categories:
-                if rule.name == wanted:
-                    return rule.calendar
-        return self.default_calendar
+    @property
+    def pushover_configured(self) -> bool:
+        return bool(self.pushover_token and self.pushover_user_key)
+
+    @property
+    def watchtower_configured(self) -> bool:
+        return bool(self.watchtower_url and self.watchtower_token)
+
+
+def write_secrets(values: Mapping[str, str]) -> Settings:
+    """Persist credentials to `data/secrets.env`.
+
+    The file is rewritten whole rather than appended to, so a replaced value leaves one
+    line rather than two and a parser choosing between them. An empty value is kept as an
+    empty line rather than dropped: that is what clears a credential the environment or
+    `.env` would otherwise go on supplying.
+    """
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    lines = {}
+    if SECRETS_FILE.exists():
+        for line in SECRETS_FILE.read_text().splitlines():
+            name, _, existing = line.partition("=")
+            if name.strip():
+                lines[name.strip()] = existing
+    lines.update({name.upper(): value for name, value in values.items()})
+    SECRETS_FILE.write_text("".join(f"{name}={value}\n" for name, value in sorted(lines.items())))
+    SECRETS_FILE.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    return Settings()

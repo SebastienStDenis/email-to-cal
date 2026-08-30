@@ -82,10 +82,12 @@ class FakeBox:
         self.logged_out = True
 
 
-def connected(settings: Settings, box: FakeBox, monkeypatch: pytest.MonkeyPatch) -> Mailbox:
+def connected(
+    settings: Settings, box: FakeBox, monkeypatch: pytest.MonkeyPatch, colour: str = "blue"
+) -> Mailbox:
     monkeypatch.setattr("email_to_cal.mailbox.MailBox", lambda *a, **k: box)
     monkeypatch.setattr(box, "login", lambda username, password: None)
-    mailbox = Mailbox(settings)
+    mailbox = Mailbox(settings, colour)
     mailbox.connect()
     return mailbox
 
@@ -101,7 +103,7 @@ def test_only_the_configured_colour_is_offered(
 
     assert [(m.folder, m.uid) for m in found] == [("INBOX", 7)]
     assert found[0].raw == raw
-    assert box.searches == [("INBOX", search_criteria(settings.flag_colour))]
+    assert box.searches == [("INBOX", search_criteria("blue"))]
 
 
 @pytest.mark.parametrize(
@@ -109,7 +111,7 @@ def test_only_the_configured_colour_is_offered(
     [
         # Every colour sets \Flagged, so the bits have to be named both ways round or
         # a message flagged some other colour would be swept up too.
-        ("red", "FLAGGED UNKEYWORD $MailFlagBit0 UNKEYWORD $MailFlagBit1 UNKEYWORD $MailFlagBit2"),
+        ("orange", "FLAGGED KEYWORD $MailFlagBit0 UNKEYWORD $MailFlagBit1 UNKEYWORD $MailFlagBit2"),
         ("blue", "FLAGGED UNKEYWORD $MailFlagBit0 UNKEYWORD $MailFlagBit1 KEYWORD $MailFlagBit2"),
         ("green", "FLAGGED KEYWORD $MailFlagBit0 KEYWORD $MailFlagBit1 UNKEYWORD $MailFlagBit2"),
     ],
@@ -173,19 +175,24 @@ def test_unflagging_clears_the_flag_in_the_right_folder(
     assert box.flag_calls == [("Archive", "3", ("\\Flagged", "$MailFlagBit2"), False)]
 
 
-def test_unflagging_red_clears_only_the_flag(
+def test_unflagging_clears_every_bit_of_the_colour(
     settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    settings.flag_colour = "red"
     box = FakeBox(
         {"INBOX": [FakeMessage(3, fixture_bytes("flight_jsonld.eml"))]}, [FakeFolder("INBOX")]
     )
-    mailbox = connected(settings, box, monkeypatch)
+    mailbox = connected(settings, box, monkeypatch, colour="grey")
 
     mailbox.unflag(mailbox.flagged()[0])
 
-    # Red carries no colour bits, so there is nothing else to clear.
-    assert box.flag_calls == [("INBOX", "3", ("\\Flagged",), False)]
+    assert box.flag_calls == [
+        ("INBOX", "3", ("\\Flagged", "$MailFlagBit1", "$MailFlagBit2"), False)
+    ]
+
+
+def test_red_is_not_on_offer() -> None:
+    # Red carries no colour bits, so it cannot be told from a plain flag set by anything.
+    assert "red" not in FLAG_COLOURS
 
 
 def test_counting_what_is_waiting_downloads_nothing(
@@ -218,7 +225,7 @@ def test_rejected_credentials_stop_rather_than_retry(
     monkeypatch.setattr(box, "login", refuse)
 
     with pytest.raises(AuthenticationFatal, match="app-specific password"):
-        Mailbox(settings).connect()
+        Mailbox(settings, "blue").connect()
 
 
 def test_the_local_part_is_tried_when_the_full_address_is_refused(
@@ -235,7 +242,7 @@ def test_the_local_part_is_tried_when_the_full_address_is_refused(
     monkeypatch.setattr("email_to_cal.mailbox.MailBox", lambda *a, **k: box)
     monkeypatch.setattr(box, "login", login)
 
-    Mailbox(settings).connect()
+    Mailbox(settings, "blue").connect()
 
     # Apple documents the local part as the username and the address as a fallback;
     # in the wild either can be the one that works.

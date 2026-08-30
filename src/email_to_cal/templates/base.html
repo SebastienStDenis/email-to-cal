@@ -2,237 +2,50 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>email-to-cal</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext x='0' y='13' font-size='13'%3E%F0%9F%93%85%3C/text%3E%3C/svg%3E">
-<style>
-  :root {
-    --bg: #fafafa; --card: #ffffff; --text: #18181b; --muted: #71717a;
-    --border: #e4e4e7; --input-bg: #ffffff; --hover: #f4f4f5;
-    --primary: #18181b; --primary-fg: #fafafa;
-    --link: #2563eb; --ring: #2563eb33;
-    --ok: #16a34a; --ok-bg: #f0fdf4; --ok-border: #bbf7d0;
-    --warn: #a16207; --warn-bg: #fefce8; --warn-border: #fde68a;
-    --bad: #dc2626; --bad-bg: #fef2f2; --bad-border: #fecaca;
-    --shadow: 0 1px 2px rgba(0, 0, 0, .05);
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #09090b; --card: #18181b; --text: #fafafa; --muted: #a1a1aa;
-      --border: #27272a; --input-bg: #09090b; --hover: #27272a;
-      --primary: #fafafa; --primary-fg: #18181b;
-      --link: #60a5fa; --ring: #60a5fa40;
-      --ok: #4ade80; --ok-bg: #05240f; --ok-border: #14532d;
-      --warn: #fbbf24; --warn-bg: #271d03; --warn-border: #713f12;
-      --bad: #f87171; --bad-bg: #2a0b0b; --bad-border: #7f1d1d;
-      --shadow: none;
-    }
-  }
-
-  * { box-sizing: border-box; }
-  html { -webkit-text-size-adjust: 100%; }
-  body {
-    margin: 0; background: var(--bg); color: var(--text);
-    font: 14px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
-    -webkit-font-smoothing: antialiased;
-  }
-
-  header {
-    border-bottom: 1px solid var(--border); background: var(--card);
-  }
-  .header-inner {
-    max-width: 44rem; margin: 0 auto; padding: .9rem 1.25rem;
-    display: flex; align-items: center; justify-content: space-between; gap: 1rem;
-  }
-  .brand {
-    display: flex; align-items: center; gap: .55rem;
-    font-weight: 600; font-size: .95rem; letter-spacing: -.01em; color: var(--text);
-    text-decoration: none;
-  }
-  .brand svg { display: block; }
-  nav { display: flex; gap: .25rem; background: var(--bg); border: 1px solid var(--border);
-    border-radius: 8px; padding: 3px; }
-  nav a {
-    padding: .3rem .85rem; border-radius: 6px; text-decoration: none;
-    color: var(--muted); font-weight: 500; font-size: .85rem;
-  }
-  nav a.active { background: var(--card); color: var(--text); box-shadow: var(--shadow);
-    border: 1px solid var(--border); margin: -1px; }
-  nav a:not(.active):hover { color: var(--text); }
-
-  main { max-width: 44rem; margin: 0 auto; padding: 1.5rem 1.25rem 4rem; }
-  main a { color: var(--link); text-decoration: none; }
-  main a:hover { text-decoration: underline; }
-
-  h1 { font-size: 1.35rem; font-weight: 650; letter-spacing: -.02em; margin: 0 0 .2rem; }
-  .page-sub { color: var(--muted); margin: 0 0 1.5rem; }
-
-  .card {
-    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
-    padding: 1.25rem 1.4rem 1.4rem; margin-bottom: 1rem; box-shadow: var(--shadow);
-  }
-  .card h2 {
-    font-size: 1rem; font-weight: 600; letter-spacing: -.01em; margin: 0;
-    display: flex; align-items: center; gap: .6rem;
-  }
-  .card-sub { color: var(--muted); margin: .25rem 0 0; }
-  .card-head { margin-bottom: 1.1rem; }
-
-  /* Setup checklist */
-  .steps { display: grid; gap: .5rem; margin-top: 1rem; }
-  .step {
-    display: flex; align-items: center; gap: .75rem; padding: .65rem .8rem;
-    border: 1px solid var(--border); border-radius: 8px; font-size: .9rem;
-  }
-  .step .tick {
-    width: 1.35rem; height: 1.35rem; border-radius: 50%; flex: none;
-    display: flex; align-items: center; justify-content: center;
-    font-size: .75rem; font-weight: 600;
-    border: 1px solid var(--border); color: var(--muted); background: var(--bg);
-  }
-  .step.done { border-color: var(--ok-border); }
-  .step.done .tick { background: var(--ok-bg); border-color: var(--ok-border); color: var(--ok); }
-  .step .what { color: var(--muted); }
-  .step.done .what { text-decoration: line-through; }
-
-  /* Forms */
-  label { display: block; font-size: .85rem; font-weight: 550; margin-bottom: .35rem; }
-  input[type=text], input[type=password], input[type=number], select {
-    width: 100%; padding: .5rem .7rem; border: 1px solid var(--border); border-radius: 8px;
-    background: var(--input-bg); color: var(--text); font: inherit; font-size: .9rem;
-  }
-  input::placeholder { color: var(--muted); opacity: .7; }
-  input:focus, select:focus, button:focus-visible, a:focus-visible, summary:focus-visible {
-    outline: none; border-color: var(--link); box-shadow: 0 0 0 3px var(--ring);
-  }
-  button:focus-visible, a:focus-visible, summary:focus-visible {
-    box-shadow: 0 0 0 3px var(--ring); border-radius: 6px;
-  }
-  .grid { display: grid; gap: 1rem 1.25rem; grid-template-columns: 1fr 1fr; }
-  .grid .wide { grid-column: 1 / -1; }
-  .hint { color: var(--muted); font-size: .82rem; line-height: 1.5; margin: .35rem 0 0; }
-  .hint ol { margin: .4rem 0 0; padding-left: 1.2rem; }
-  .hint li { margin-bottom: .45rem; }
-
-  .switch { display: flex; align-items: flex-start; gap: .6rem; }
-  .switch input { margin-top: .2rem; accent-color: var(--primary); width: 1rem; height: 1rem; }
-  .switch label { margin: 0; }
-
-  /* Buttons */
-  button, .btn {
-    font: inherit; font-size: .875rem; font-weight: 550; cursor: pointer;
-    padding: .5rem 1rem; border-radius: 8px; border: 1px solid transparent;
-    display: inline-flex; align-items: center; gap: .45rem; text-decoration: none;
-  }
-  .btn-primary { background: var(--primary); color: var(--primary-fg); }
-  .btn-primary:hover { opacity: .88; }
-  .btn-secondary { background: var(--card); color: var(--text); border-color: var(--border);
-    box-shadow: var(--shadow); }
-  .btn-secondary:hover { background: var(--hover); }
-  .btn-ghost { background: transparent; color: var(--muted); }
-  .btn-ghost:hover { background: var(--hover); color: var(--text); }
-  .btn-sm { padding: .35rem .75rem; font-size: .82rem; }
-  .actions { margin-top: 1.25rem; display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
-
-  .savebar { margin-top: 1.25rem; display: flex; }
-  .switch .hint { display: block; font-weight: 400; }
-
-  /* Badges */
-  .badge {
-    display: inline-flex; align-items: center; gap: .3rem;
-    padding: .1rem .6rem; border-radius: 99px; border: 1px solid var(--border);
-    font-size: .75rem; font-weight: 600; letter-spacing: .01em; color: var(--muted);
-  }
-  .badge.ok { color: var(--ok); background: var(--ok-bg); border-color: var(--ok-border); }
-  .badge.warn { color: var(--warn); background: var(--warn-bg); border-color: var(--warn-border); }
-  .badge.bad { color: var(--bad); background: var(--bad-bg); border-color: var(--bad-border); }
-
-  /* Flash + errors */
-  .flash { list-style: none; padding: 0; margin: 0 0 1rem; }
-  .flash li {
-    border: 1px solid var(--ok-border); background: var(--ok-bg); color: var(--ok);
-    border-radius: 8px; padding: .6rem .9rem; margin-bottom: .5rem; font-weight: 550;
-    font-size: .9rem;
-  }
-  .errors {
-    border: 1px solid var(--bad-border); background: var(--bad-bg); color: var(--bad);
-    border-radius: 8px; padding: .7rem 1rem .7rem 2rem; margin: 0 0 1rem; font-size: .9rem;
-  }
-  .errors li { margin: .15rem 0; }
-
-  /* Tables */
-  table { width: 100%; border-collapse: collapse; font-size: .875rem; }
-  th { text-align: left; color: var(--muted); font-weight: 550; font-size: .8rem;
-    padding: .45rem .5rem; border-bottom: 1px solid var(--border); }
-  td { padding: .55rem .5rem; border-bottom: 1px solid var(--border); vertical-align: top;
-    overflow-wrap: anywhere; }
-  tr:last-child td { border-bottom: none; }
-  .muted { color: var(--muted); }
-  .empty { color: var(--muted); padding: 1.4rem 0 .4rem; text-align: center; }
-
-  /* Disclosure */
-  details { margin-top: 1.1rem; border-top: 1px solid var(--border); padding-top: .8rem; }
-  summary { cursor: pointer; color: var(--muted); font-size: .85rem; font-weight: 550;
-    user-select: none; }
-  summary:hover { color: var(--text); }
-  details[open] summary { margin-bottom: .9rem; }
-
-  /* Category rows */
-  .category-row {
-    display: grid; grid-template-columns: 8.5rem 1fr 8.5rem auto; gap: .5rem;
-    margin-bottom: .5rem; align-items: start;
-  }
-
-  /* Timezone autocomplete */
-  .autocomplete { position: relative; }
-  .suggestions {
-    display: none; position: absolute; top: calc(100% + 4px); left: 0; right: 0;
-    z-index: 10; background: var(--card); border: 1px solid var(--border);
-    border-radius: 8px; max-height: 13rem; overflow-y: auto; padding: 4px;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, .12);
-  }
-  .suggestions div { padding: .4rem .6rem; cursor: pointer; font-size: .875rem;
-    border-radius: 6px; }
-  .suggestions div:hover, .suggestions div.active { background: var(--hover); }
-
-  @media (max-width: 40rem) {
-    .grid { grid-template-columns: 1fr; }
-    .category-row { grid-template-columns: 1fr; border: 1px solid var(--border);
-      border-radius: 8px; padding: .7rem; }
-    .header-inner { padding: .75rem 1rem; }
-    main { padding: 1.25rem 1rem 4rem; }
-  }
-  @media (prefers-reduced-motion: no-preference) {
-    nav a, button, .btn, .suggestions div { transition: background .12s, color .12s, opacity .12s; }
-  }
-</style>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>{% block title %}email-to-cal{% endblock %}</title>
+<meta name="theme-color" content="#f0f0ed" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1d1614" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="preload" href="/static/fonts/manrope-latin-var.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/static/fonts/jetbrains-mono-latin-var.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/static/email-to-cal.css">
+<!-- The component registers itself with the core, so the core has to be first. -->
+<script src="/static/basecoat.min.js" defer></script>
+<script src="/static/basecoat-tabs.min.js" defer></script>
 </head>
-<body>
-<header>
-  <div class="header-inner">
-    <a class="brand" href="{{ url_for('index') }}">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <rect x="3" y="4" width="18" height="18" rx="3"/>
-        <path d="M16 2v4M8 2v4M3 10h18M9 16l2 2 4-4"/>
-      </svg>
-      email-to-cal
+<body class="flex min-h-dvh flex-col">
+{% set here = request.path %}
+<header class="sticky top-0 z-20 border-b bg-background/85 backdrop-blur"
+        style="padding-top: env(safe-area-inset-top)">
+  {# The bar is h-14 and the buttons fill it, so each one is a target a thumb can find
+     without aiming. #}
+  <nav class="topbar mx-auto flex h-14 max-w-lg items-center gap-1 px-3" aria-label="Sections">
+    <a class="btn text-lg" data-size="lg" href="/"
+       data-variant="{{ 'secondary' if here == '/' else 'ghost' }}"
+       {% if here == '/' %}aria-current="page"{% endif %}>
+      <span class="brand">
+        <svg class="brand-mark size-[1.1em]" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3" y="4" width="18" height="18" rx="3"/>
+          <path d="M16 2v4M8 2v4M3 10h18M9 16l2 2 4-4"/>
+        </svg>
+        <span>email-to-cal</span>
+      </span>
     </a>
-    <nav>
-      <a href="{{ url_for('status_page') }}"
-         {% if request.endpoint in ('status_page', 'check') %}class="active"{% endif %}>Status</a>
-      <a href="{{ url_for('settings_page') }}"
-         {% if request.endpoint == 'settings_page' %}class="active"{% endif %}>Settings</a>
-    </nav>
-  </div>
+    <a class="btn ml-auto" data-size="icon-lg" href="/settings" aria-label="Settings"
+       data-variant="{{ 'secondary' if here.startswith('/settings') else 'ghost' }}"
+       {% if here.startswith('/settings') %}aria-current="page"{% endif %}>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/>
+        <circle cx="12" cy="12" r="3"/>
+      </svg>
+    </a>
+  </nav>
 </header>
-<main>
-  {% with messages = get_flashed_messages() %}
-    {% if messages %}
-      <ul class="flash">{% for message in messages %}<li>{{ message }}</li>{% endfor %}</ul>
-    {% endif %}
-  {% endwith %}
-  {% block content %}{% endblock %}
+<main class="mx-auto flex w-full max-w-lg flex-1 flex-col px-4 pt-4">
+{% block content %}{% endblock %}
 </main>
 </body>
 </html>

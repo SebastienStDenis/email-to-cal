@@ -1,103 +1,121 @@
-"""Preflight: exercise every external dependency, shared by `check` and the portal."""
+"""Exercise every external dependency and name the broken one.
+
+Shared by the `check` command and the settings page, which proves a credential before it
+keeps it: a typo saved and only noticed the next time an email quietly fails to appear
+is the failure this exists to prevent.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 import anthropic
-import httpx
 
 from .cal import CalendarClient
 from .config import Settings
 from .mailbox import Mailbox
 from .notify import validate_keys
-from .store import Store
+from .prefs import Prefs
 
 
-@dataclass
+@dataclass(frozen=True)
 class CheckResult:
     name: str
     ok: bool
     detail: str
 
 
-def run_checks(settings: Settings) -> list[CheckResult]:
-    """Validate the state db, the mailbox, the model, and the calendar.
-
-    Safe to run against production: nothing is written anywhere.
-    """
-    results = [CheckResult("state db", True, str(settings.state_db))]
-
-    with Store(settings.state_db) as store:
-        failures = store.list_failures()
-    if failures:
-        summary = ", ".join(f"{f.subject[:40]!r} ({f.attempts} attempts)" for f in failures[:5])
-        results.append(CheckResult("failed messages", True, f"{len(failures)} recorded: {summary}"))
-
-    results.append(_check_mailbox(settings))
-    if settings.provider == "ollama":
-        results.append(_check_ollama(settings))
-    else:
-        results.append(_check_claude(settings))
-    if settings.pushover_user and settings.pushover_token:
-        results.append(_check_pushover(settings))
-    results.append(_check_calendar(settings))
-    return results
-
-
-def _check_mailbox(settings: Settings) -> CheckResult:
+def check_mail(settings: Settings, prefs: Prefs) -> CheckResult:
+    """Logs in and counts what carries the flag, across every folder the sweep looks in."""
+    if not settings.icloud_configured:
+        return CheckResult("mail", False, "connect iCloud under Connections")
+    mailbox = Mailbox(settings, prefs.flag_colour)
     try:
-        mailbox = Mailbox(settings)
         mailbox.connect()
         folders = mailbox.folders()
         flagged = mailbox.count_flagged()
-        mailbox.close()
     except Exception as exc:
-        return CheckResult("mailbox", False, str(exc))
+        return CheckResult("mail", False, str(exc))
+    finally:
+        mailbox.close()
     return CheckResult(
-        "mailbox", True, f"{len(folders)} folders searched, {flagged} message(s) flagged now"
+        "mail",
+        True,
+        f"{flagged} message(s) flagged {prefs.flag_colour} across {len(folders)} folder(s)",
     )
 
 
-def _check_claude(settings: Settings) -> CheckResult:
+def check_calendar(settings: Settings, names: set[str]) -> CheckResult:
+    """Signs in over CalDAV and looks for every calendar named, in one discovery pass."""
+    if not settings.icloud_configured:
+        return CheckResult("calendar", False, "connect iCloud under Connections")
+    wanted = {name for name in names if name}
+    if not wanted:
+        return CheckResult("calendar", False, "pick a calendar under Preferences")
     try:
-        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-        client.models.retrieve(settings.anthropic_model)
+        resolved = CalendarClient(settings).resolve(wanted)
+    except Exception as exc:
+        return CheckResult("calendar", False, str(exc))
+    listed = ", ".join(f"{name} at {url}" for name, url in sorted(resolved.items()))
+    return CheckResult("calendar", True, f"writing to {listed}")
+
+
+def check_anthropic(settings: Settings) -> CheckResult:
+    """Lists the models, which proves the key without spending a token to do it."""
+    if not settings.anthropic_configured:
+        return CheckResult("anthropic", False, "connect Anthropic under Connections")
+    client = anthropic.Anthropic(api_key=settings.anthropic_api_key, max_retries=0)
+    try:
+        client.models.list(limit=1)
+    except anthropic.AuthenticationError:
+        return CheckResult("anthropic", False, "key rejected")
     except Exception as exc:
         return CheckResult("anthropic", False, str(exc))
-    return CheckResult("anthropic", True, f"{settings.anthropic_model} reachable")
+    return CheckResult("anthropic", True, "key accepted")
 
 
-def _check_ollama(settings: Settings) -> CheckResult:
-    """The server answers and the configured model is actually pulled."""
-    try:
-        with httpx.Client(base_url=settings.ollama_url, timeout=10.0) as client:
-            reply = client.get("/api/tags")
-            reply.raise_for_status()
-            names = {str(m.get("name", "")) for m in reply.json().get("models", [])}
-    except Exception as exc:
-        return CheckResult("ollama", False, f"cannot reach {settings.ollama_url}: {exc}")
-
-    wanted = settings.ollama_model
-    # Ollama lists a bare pull as "name:latest"; accept either spelling.
-    if wanted in names or (":" not in wanted and f"{wanted}:latest" in names):
-        return CheckResult("ollama", True, f"{wanted} available at {settings.ollama_url}")
-    return CheckResult(
-        "ollama", False, f"model {wanted!r} is not pulled; run: ollama pull {wanted}"
-    )
-
-
-def _check_pushover(settings: Settings) -> CheckResult:
+def check_pushover(settings: Settings) -> CheckResult:
+    if not settings.pushover_configured:
+        return CheckResult("pushover", False, "connect Pushover under Connections")
     try:
         return CheckResult("pushover", True, validate_keys(settings))
     except Exception as exc:
         return CheckResult("pushover", False, str(exc))
 
 
-def _check_calendar(settings: Settings) -> CheckResult:
-    try:
-        resolved = CalendarClient(settings).resolve(settings.calendars)
-    except Exception as exc:
-        return CheckResult("calendar", False, str(exc))
-    listed = ", ".join(f"{name!r} -> {url}" for name, url in sorted(resolved.items()))
-    return CheckResult("calendar", True, listed)
+def check_watchtower(settings: Settings) -> CheckResult:
+    """Asks the API to prove itself without asking it to update anything; see `updates`."""
+    if not settings.watchtower_configured:
+        return CheckResult("watchtower", False, "connect Watchtower under Connections")
+    from . import updates
+
+    ok, detail = updates.probe(settings)
+    return CheckResult("watchtower", ok, detail)
+
+
+def check_service(settings: Settings, prefs: Prefs, service: str) -> CheckResult:
+    """Prove one connection's credentials, as the settings page does before saving them."""
+    if service == "icloud":
+        return check_mail(settings, prefs)
+    if service == "anthropic":
+        return check_anthropic(settings)
+    if service == "pushover":
+        return check_pushover(settings)
+    if service == "watchtower":
+        return check_watchtower(settings)
+    raise ValueError(f"no such connection: {service!r}")
+
+
+def run_checks(settings: Settings, prefs: Prefs) -> list[CheckResult]:
+    """Everything the watcher depends on, in the order it depends on them.
+
+    Safe to run against production: nothing is written anywhere.
+    """
+    results = [
+        check_mail(settings, prefs),
+        check_anthropic(settings),
+        check_calendar(settings, prefs.calendars),
+    ]
+    if settings.pushover_configured:
+        results.append(check_pushover(settings))
+    return results

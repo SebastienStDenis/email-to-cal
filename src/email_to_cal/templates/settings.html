@@ -1,359 +1,884 @@
 {% extends "base.html" %}
+{% import "basecoat/tabs.html.jinja" as bc %}
+{% block title %}Settings{% endblock %}
 {% block content %}
 
-{% set mail_done = values.apple_id and values.apple_password %}
-{% set ai_done = values.provider == 'ollama' or values.anthropic_api_key %}
-{% set cal_done = values.default_calendar %}
+{% set icloud_ready = connected['icloud_email'] and connected['icloud_app_password'] %}
+{% set anthropic_ready = connected['anthropic_api_key'] %}
+{% set pushover_ready = connected['pushover_token'] and connected['pushover_user_key'] %}
+{% set watchtower_ready = connected['watchtower_url'] and connected['watchtower_token'] %}
 
-<h1>Settings</h1>
-<p class="page-sub">Connect your accounts and pick the calendar to write to.</p>
+<h1 class="mb-4 text-xl font-semibold tracking-tight">Settings</h1>
 
-{% if errors %}
-<ul class="errors">{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul>
+{# Remove is drawn inside a summary, where only a script can keep a press from folding
+   the row instead. Without one, the plain form below each account is what shows. #}
+<noscript><style>.removable { display: block; }</style></noscript>
+
+{% if error %}
+<div class="alert mb-3" data-variant="destructive" role="alert">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+       stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M12 8v4M12 16h.01"/><circle cx="12" cy="12" r="10"/>
+  </svg>
+  <strong>{{ error }}</strong>
+</div>
 {% endif %}
 
-{% if missing %}
-<section class="card">
-  <h2>Set up in three steps</h2>
-  <p class="card-sub">Then flag an email in Mail and it lands on your calendar.</p>
-  <div class="steps">
-    <div class="step {{ 'done' if mail_done }}">
-      <span class="tick">{{ '✓' if mail_done else '1' }}</span>
-      <span>Apple ID</span>
-      <span class="what">your iCloud address and an app password</span>
-    </div>
-    <div class="step {{ 'done' if ai_done }}">
-      <span class="tick">{{ '✓' if ai_done else '2' }}</span>
-      <span>The model</span>
-      <span class="what">what reads your email</span>
-    </div>
-    <div class="step {{ 'done' if cal_done }}">
-      <span class="tick">{{ '✓' if cal_done else '3' }}</span>
-      <span>Calendar</span>
-      <span class="what">where events end up</span>
-    </div>
+{# A status is a word first. The badge only colours the word it is already carrying. #}
+{% macro status(ready, done='Connected', todo='Not connected', tone='quiet') %}
+<span class="badge shrink-0" data-variant="{{ 'ok' if ready else tone }}">
+  {{- done if ready else todo -}}</span>
+{% endmacro %}
+
+{# What a card cannot do until a connection is made. #}
+{% macro waiting_on(service, what) %}
+<p class="flex items-start gap-2 text-sm text-muted-foreground">
+  <svg class="mt-0.5 size-4 shrink-0 text-foreground" viewBox="0 0 24 24" fill="none"
+       stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+       aria-hidden="true">
+    <path d="M12 9v4M12 17h.01"/><circle cx="12" cy="12" r="10"/>
+  </svg>
+  <span>Connect {{ service }} in <a class="btn align-middle" data-variant="outline"
+      data-size="xs" href="/settings?tab=connections">Connections</a> to {{ what }}.</span>
+</p>
+{% endmacro %}
+
+{# The switch that puts a whole card's job down. It sits in the card's header rather than
+   among the settings it governs, because what it turns off is everything under them.
+   Without the account it runs on there is nothing for the switch to turn on: it is
+   drawn off and cannot be flicked, and the card says what is missing. #}
+{% macro toggle(field, label, governs, ready=True) %}
+<label for="{{ field }}" class="sr-only">{{ label }}</label>
+<input class="input" type="checkbox" role="switch" id="{{ field }}" name="{{ field }}"
+       value="true" data-enables="{{ governs }}"
+       {{- ' checked' if posted[field] and ready }}{{ ' disabled' if not ready }}>
+{% endmacro %}
+
+{% macro chevron() %}
+<svg class="chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+  <path d="m6 9 6 6 6-6"/>
+</svg>
+{% endmacro %}
+
+{# What is on file, shown rather than offered for editing. A stored secret is a bar and
+   not a box, because a box invites typing into something that is already set and
+   cannot be read back. #}
+{% macro stored(field) %}
+<div class="flex items-center justify-between gap-3">
+  <span class="shrink-0 text-sm font-medium">{{ field.label }}</span>
+  {% if field.value %}
+  <span class="min-w-0 truncate font-mono text-sm text-muted-foreground">{{ field.value }}</span>
+  {% else %}
+  <span class="secret-bar" aria-hidden="true"></span>
+  <span class="sr-only">Saved</span>
+  {% endif %}
+</div>
+{% endmacro %}
+
+{# What is already set is put back in the box, except where it is a secret: those are
+   never rendered into the page, so an empty box means "leave it alone". Until there is
+   a connection there is nothing to leave alone, so the browser asks for the box to be
+   filled rather than the page taking a save that connects nothing. #}
+{% macro box(field, ready=False) %}
+<div role="group" class="field">
+  <label for="{{ field.name }}">{{ field.label }}
+    {%- if ready and not field.value %}
+    <span class="text-xs font-normal text-muted-foreground">
+      (leave empty to keep saved value)</span>
+    {%- endif %}</label>
+  <input type="{{ field.type|default('password') }}" id="{{ field.name }}"
+         name="{{ field.name }}" class="font-mono"
+         {% if not ready %}required{% endif %}
+         autocomplete="{{ field.autocomplete|default('off') }}"
+         {% if field.help %}aria-describedby="{{ field.name }}-help"{% endif %}
+         value="{{ field.value|default('') }}">
+  {% if field.help %}
+  <p id="{{ field.name }}-help" class="text-xs">{{ field.help|safe }}</p>
+  {% endif %}
+</div>
+{% endmacro %}
+
+{# One row per account, closed until there is a reason to open it. Connected, it shows
+   what is on file and keeps the boxes behind a button, so the common case is something
+   to read rather than a form to be careful around. Each stays its own form, because
+   only a form scoped to one service can say which empty box was meant. An account that
+   is not connected opens on the way in, and folds away once it is. #}
+{% macro account(key, name, ready, fields, detail='', todo='Not connected', tone='quiet') %}
+<details class="setting"{{ ' open' if not ready }}>
+  <summary>
+    <span class="min-w-0 flex-1">
+      <span class="block font-medium">{{ name }}</span>
+      {% if detail %}
+      <span class="block text-xs leading-snug text-muted-foreground">{{ detail }}</span>
+      {% endif %}
+    </span>
+    {{ status(ready, 'Connected', todo, tone) }}
+    {{ chevron() }}
+  </summary>
+  <div class="pb-4">
+    {% if ready %}
+    <details class="reveal">
+      <summary>
+        <div class="fieldset gap-2 pe-7">
+          {% for field in fields %}{{ stored(field) }}{% endfor %}
+        </div>
+        <div class="mt-4 flex items-center justify-end gap-2">
+          <button class="btn text-stop" data-variant="ghost" data-size="sm" type="button"
+                  onclick="removeAccount(event, '{{ key }}')">Remove</button>
+          <span class="btn" data-variant="outline" data-size="sm">Edit</span>
+        </div>
+      </summary>
+      <form method="post" action="/settings/credentials" data-save-scope>
+        <input type="hidden" name="service" value="{{ key }}">
+        <input type="hidden" name="tab" value="connections">
+        <fieldset class="fieldset gap-4">
+          {% for field in fields %}{{ box(field, ready) }}{% endfor %}
+        </fieldset>
+        <div class="mt-4 flex items-center gap-2">
+          <p class="save-error min-w-0 flex-1 text-xs text-stop" role="alert"></p>
+          <button class="btn" data-variant="ghost" data-size="sm" type="button"
+                  onclick="cancelEdit(this)">Cancel</button>
+          <button class="btn" data-save data-size="sm" type="submit">Save</button>
+        </div>
+      </form>
+    </details>
+    <form class="removable mt-3" id="{{ key }}-remove" method="post"
+          action="/settings/credentials">
+      <input type="hidden" name="service" value="{{ key }}">
+      <button class="btn text-stop" data-variant="ghost" data-size="sm" type="submit"
+              name="forget" value="1">Remove</button>
+    </form>
+    {% else %}
+    <form method="post" action="/settings/credentials" data-save-scope>
+      <input type="hidden" name="service" value="{{ key }}">
+      <input type="hidden" name="tab" value="connections">
+      <fieldset class="fieldset gap-4">
+        {% for field in fields %}{{ box(field) }}{% endfor %}
+      </fieldset>
+      <div class="mt-4 flex items-center gap-2">
+        <p class="save-error min-w-0 flex-1 text-xs text-stop" role="alert"></p>
+        <button class="btn" data-save data-size="sm" type="submit">Save</button>
+      </div>
+    </form>
+    {% endif %}
   </div>
-</section>
-{% endif %}
+</details>
+{% endmacro %}
 
-<form method="post" action="{{ url_for('settings_save') }}">
-  <section class="card">
-    <div class="card-head">
-      <h2>Apple ID
-        {% if mail_done %}<span class="badge ok">ready</span>{% endif %}
-      </h2>
-      <p class="card-sub">One app-specific password reaches both your mail and your
-        calendars.</p>
-    </div>
-    <div class="grid">
-      <div>
-        <label for="apple_id">iCloud email</label>
-        <input type="text" id="apple_id" name="apple_id"
-               value="{{ values.apple_id }}" placeholder="you@icloud.com">
+{# A calendar picker. The options arrive after the page does, so the control is present
+   but held until iCloud has answered rather than the whole page waiting on it. #}
+{% macro calendar_select(name, selected, help_id=None) %}
+<div role="group" class="field relative">
+  <label for="{{ name }}">Calendar</label>
+  <select id="{{ name }}" name="calendar" data-calendars data-selected="{{ selected }}"
+          {% if help_id %}aria-describedby="{{ help_id }}"{% endif %} aria-busy="true" disabled>
+    <option>Loading calendars…</option>
+  </select>
+  <span class="spinner" aria-hidden="true"></span>
+  {% if help_id %}<p id="{{ help_id }}" class="text-xs"></p>{% endif %}
+</div>
+{% endmacro %}
+
+{# One category, closed until there is a reason to open it. Its own form, so a save
+   that is refused touches nothing else on the page. #}
+{% macro category_row(category) %}
+<details class="setting">
+  <summary>
+    <span class="min-w-0 flex-1">
+      <span class="block font-medium">{{ category.name }}</span>
+      <span class="block text-xs leading-snug text-muted-foreground">{{ category.description }}</span>
+    </span>
+    <span class="badge shrink-0" data-variant="quiet">{{ category.calendar }}</span>
+    {{ chevron() }}
+  </summary>
+  <div class="pb-4">
+    <form method="post" action="/settings/categories" data-save-scope>
+      <input type="hidden" name="original" value="{{ category.name }}">
+      <input type="hidden" name="tab" value="preferences">
+      {{ category_fields(category) }}
+      <div class="mt-4 flex items-center gap-2">
+        <p class="save-error min-w-0 flex-1 text-xs text-stop" role="alert"></p>
+        <button class="btn text-stop" data-variant="ghost" data-size="sm" type="submit"
+                name="remove" value="1" formnovalidate>Remove</button>
+        <button class="btn" data-save data-size="sm" type="submit">Save</button>
       </div>
-      <div>
-        <label for="apple_password">App password</label>
-        <input type="password" id="apple_password" name="apple_password"
-               value="{{ values.apple_password }}" placeholder="xxxx-xxxx-xxxx-xxxx">
-        <p class="hint">A separate password just for this app. Create one at
-          <a href="https://appleid.apple.com" target="_blank" rel="noopener">appleid.apple.com</a>
-          &rarr; Sign-In and Security &rarr; App-Specific Passwords. If you ever change
-          your Apple ID password, you'll need to make a new one.</p>
-      </div>
+    </form>
+  </div>
+</details>
+{% endmacro %}
+
+{% macro category_fields(category) %}
+<fieldset class="fieldset gap-4">
+  <div role="group" class="field">
+    <label for="{{ category.name or 'new' }}-name">Name</label>
+    <input type="text" id="{{ category.name or 'new' }}-name" name="name" required
+           autocomplete="off" value="{{ category.name }}">
+  </div>
+  <div role="group" class="field">
+    <label for="{{ category.name or 'new' }}-description">Description</label>
+    <input type="text" id="{{ category.name or 'new' }}-description" name="description" required
+           autocomplete="off" value="{{ category.description }}"
+           aria-describedby="{{ category.name or 'new' }}-description-help">
+    <p id="{{ category.name or 'new' }}-description-help" class="text-xs">What belongs here,
+      in your own words. The model reads it to decide.</p>
+  </div>
+  {{ calendar_select((category.name or 'new') ~ '-calendar', category.calendar) }}
+</fieldset>
+{% endmacro %}
+
+{% set connections %}
+{# No heading on this one: the tab above it is already the word "Connections". #}
+<div class="card py-1" data-size="sm">
+  <section>
+    <div class="divide-y">
+      {{ account('icloud', 'iCloud', icloud_ready, [
+           {'name': 'icloud_email', 'label': 'Apple ID', 'type': 'email',
+            'autocomplete': 'username', 'value': icloud_email},
+           {'name': 'icloud_app_password', 'label': 'App-specific password',
+            'help': 'Create one at <a href="https://appleid.apple.com" target="_blank"
+                     rel="noopener">appleid.apple.com</a>.'},
+         ], 'Import events from email, write them to your calendar', 'Required', 'stop') }}
+
+      {{ account('anthropic', 'Anthropic', anthropic_ready, [
+           {'name': 'anthropic_api_key', 'label': 'API key',
+            'help': 'From <a href="https://console.anthropic.com" target="_blank"
+                     rel="noopener">console.anthropic.com</a>. Only flagged emails are
+                     read.'},
+         ], 'Extract event details from email', 'Required', 'stop') }}
+
+      {{ account('pushover', 'Pushover', pushover_ready, [
+           {'name': 'pushover_token', 'label': 'Application token',
+            'help': 'Register an app at <a href="https://pushover.net/apps/build"
+                     target="_blank" rel="noopener">pushover.net</a>.'},
+           {'name': 'pushover_user_key', 'label': 'User key'},
+         ], 'Server notifications') }}
     </div>
-    <div class="grid">
-      <div>
-        <label for="flag_colour">Flag colour</label>
-        <select id="flag_colour" name="flag_colour">
-          {% for colour in ['red', 'orange', 'yellow', 'green', 'blue', 'purple', 'grey'] %}
-          <option value="{{ colour }}"
-                  {% if values.flag_colour == colour %}selected{% endif %}>
-            {{ colour | capitalize }}</option>
+  </section>
+</div>
+
+{# Watchtower is the one connection that is about the deployment rather than about an
+   email, so it stands behind Advanced rather than among the accounts every deployment
+   needs. The Version row it powers lives under Preferences → Advanced, because knowing
+   whether a newer build exists never needed Watchtower - only installing one does. #}
+<div class="accordion accordion-tight mt-3 rounded-lg border px-3">
+  <details id="connections-advanced">
+    <summary class="text-base font-semibold tracking-tight">Advanced {{ chevron() }}</summary>
+    <div class="-mt-2 pb-0">
+      {{ account('watchtower', 'Watchtower', watchtower_ready, [
+           {'name': 'watchtower_url', 'label': 'API address', 'type': 'text',
+            'value': watchtower_url,
+            'help': 'Watchtower endpoint, usually <code>http://watchtower:8080</code>.'},
+           {'name': 'watchtower_token', 'label': 'API token'},
+         ], 'Install updates under Preferences → Advanced') }}
+    </div>
+  </details>
+</div>
+{% endset %}
+
+{% set preferences %}
+<form id="settings-form" method="post" action="/settings">
+  <input type="hidden" name="tab" value="preferences">
+
+  <div class="card" data-size="sm">
+    <header>
+      <h3>Calendar</h3>
+      <p>Write events to your iCloud calendar.</p>
+    </header>
+    <section>
+      {% if not icloud_ready %}
+      {{ waiting_on('iCloud', 'configure a calendar') }}
+      {% else %}
+      <fieldset class="fieldset gap-4">
+        {{ calendar_select('calendar', posted['calendar'], 'calendar-help') }}
+        <div role="group" class="field">
+          <label for="timezone">Time zone</label>
+          <input type="text" id="timezone" name="timezone" list="timezones" class="font-mono"
+                 autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
+                 aria-describedby="timezone-help" value="{{ posted['timezone'] }}">
+          <datalist id="timezones">
+            {% for zone in timezones %}<option value="{{ zone }}">{% endfor %}
+          </datalist>
+          <p id="timezone-help" class="text-xs">Used when an email does not say where the
+            event happens.</p>
+        </div>
+      </fieldset>
+      {% endif %}
+    </section>
+  </div>
+
+  <div class="card mt-3" data-size="sm">
+    <header>
+      <h3>Email</h3>
+      <p>Import events from flagged iCloud emails.</p>
+    </header>
+    <section>
+      {% if not icloud_ready %}
+      {{ waiting_on('iCloud', 'configure email') }}
+      {% else %}
+      <fieldset>
+        <legend class="sr-only">Flag colour</legend>
+        <div class="flag-row mb-2.5 -mt-1.5">
+          {% for colour in flag_colours %}
+          <label class="flag-target">
+            <input type="radio" class="peer sr-only" name="flag_colour"
+                   value="{{ colour }}"{{ ' checked' if colour == posted['flag_colour'] }}>
+            <span class="flag-pick" data-colour="{{ colour }}">
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"
+                   stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                   stroke-linejoin="round" aria-hidden="true">
+                <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/>
+                <path d="M4 22v-7" fill="none"/>
+              </svg>
+            </span>
+            <span class="sr-only">{{ colour|capitalize }}</span>
+          </label>
           {% endfor %}
-        </select>
-        <p class="hint">Flag an email this colour and it becomes an event; the flag comes
-          off when it's done. Every other colour is ignored, so they keep whatever
-          meaning you already give them.</p>
-      </div>
-    </div>
-    <p class="hint">Every folder is searched, so it doesn't matter where the email is
-      filed. Junk and Trash are left alone.</p>
-    <details>
-      <summary>Advanced</summary>
-      <div class="grid">
-        <div>
-          <label for="imap_host">Mail server</label>
-          <input type="text" id="imap_host" name="imap_host" value="{{ values.imap_host }}">
         </div>
-        <div>
-          <label for="imap_port">Port</label>
-          <input type="number" id="imap_port" name="imap_port" value="{{ values.imap_port }}">
-        </div>
-        <div>
-          <label for="poll_interval_seconds">Check for flags every (seconds)</label>
-          <input type="number" id="poll_interval_seconds" name="poll_interval_seconds"
-                 value="{{ values.poll_interval_seconds }}">
-          <p class="hint">How long a flagged email waits before it's picked up.</p>
-        </div>
-      </div>
-    </details>
-  </section>
+      </fieldset>
+      <p class="text-xs text-muted-foreground">Flag an email
+        <strong class="flag-name" id="flag-name" data-colour="{{ posted['flag_colour'] }}">
+          {{- posted['flag_colour']|capitalize -}}</strong>
+        in any iCloud mailbox to add it to your calendar. Processed within a minute.</p>
+      {% endif %}
+    </section>
+  </div>
 
-  <section class="card">
-    <div class="card-head">
-      <h2>Reading email
-        {% if ai_done %}<span class="badge ok">ready</span>{% endif %}
-      </h2>
-      <p class="card-sub">What turns a flagged email into an event.</p>
-    </div>
-    <div class="grid">
-      <div>
-        <label for="provider">Model</label>
-        <select id="provider" name="provider">
-          <option value="anthropic" {% if values.provider == 'anthropic' %}selected{% endif %}>
-            Claude (reads PDFs and photos)</option>
-          <option value="ollama" {% if values.provider == 'ollama' %}selected{% endif %}>
-            Local model (free, private, text only)</option>
-        </select>
-        <p class="hint">A local model costs nothing and never sends your mail anywhere,
-          but it can only read text: scanned tickets and boarding-pass images come back
-          empty, and you get a notification saying so.</p>
+  {# One switch for the lot, and a row per outcome under it. #}
+  <div class="card mt-3" data-size="sm">
+    <header>
+      <h3>Notifications</h3>
+      <div class="card-action">
+        {{ toggle('notifications_enabled', 'Notifications', 'notification-settings',
+                  pushover_ready) }}
       </div>
-      <div>
-        <label for="anthropic_api_key">Claude API key</label>
-        <input type="password" id="anthropic_api_key" name="anthropic_api_key"
-               value="{{ values.anthropic_api_key }}" placeholder="sk-ant-...">
-        <p class="hint">From
-          <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a>
-          &rarr; API keys. Only flagged email is ever read, so this costs very little.</p>
-      </div>
-      <div>
-        <label for="ollama_url">Ollama server</label>
-        <input type="text" id="ollama_url" name="ollama_url" value="{{ values.ollama_url }}">
-        <p class="hint">With Ollama in a sibling container, <code>http://ollama:11434</code>;
-          on the host from Docker, <code>http://host.docker.internal:11434</code>.</p>
-      </div>
-      <div>
-        <label for="ollama_model">Local model</label>
-        <input type="text" id="ollama_model" name="ollama_model"
-               value="{{ values.ollama_model }}">
-        <p class="hint">Pull it first: <code>ollama pull {{ values.ollama_model }}</code>.</p>
-      </div>
-    </div>
-    <details>
-      <summary>Advanced</summary>
-      <div class="grid">
-        <div>
-          <label for="anthropic_model">Claude model</label>
-          <input type="text" id="anthropic_model" name="anthropic_model"
-                 value="{{ values.anthropic_model }}">
-        </div>
-        <div>
-          <label for="anthropic_effort">How carefully it reads</label>
-          <select id="anthropic_effort" name="anthropic_effort">
-            {% for effort in ['low', 'medium', 'high', 'xhigh', 'max'] %}
-            <option value="{{ effort }}"
-                    {% if values.anthropic_effort == effort %}selected{% endif %}>
-              {{ effort }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div>
-          <label for="max_attachment_mb">Largest attachment to read (MB)</label>
-          <input type="text" id="max_attachment_mb" name="max_attachment_mb"
-                 value="{{ values.max_attachment_mb }}">
-        </div>
-        <div class="switch" style="align-self: end;">
-          <input type="checkbox" id="enable_vision" name="enable_vision"
-                 {% if values.enable_vision %}checked{% endif %}>
-          <label for="enable_vision">Read PDFs and images
-            <span class="hint">How boarding passes and e-tickets get read. Claude
-              only.</span></label>
-        </div>
-      </div>
-    </details>
-  </section>
-
-  <section class="card">
-    <div class="card-head">
-      <h2>Calendar
-        {% if cal_done %}<span class="badge ok">ready</span>{% endif %}
-      </h2>
-      <p class="card-sub">Where your events end up.</p>
-    </div>
-    <div class="grid">
-      <div>
-        <label for="default_calendar">Main calendar</label>
-        <input type="text" id="default_calendar" name="default_calendar"
-               value="{{ values.default_calendar }}" placeholder="Bookings">
-        <p class="hint">Where events go when they match no category below. Name it
-          exactly as it appears in the Calendar app &mdash; every calendar here has to
-          exist already. <strong>Check connections</strong> on the Status page lists
-          every calendar it can see if a name doesn't match.</p>
-      </div>
-      <div>
-        <label for="default_timezone">Time zone</label>
-        <div class="autocomplete">
-          <input type="text" id="default_timezone" name="default_timezone"
-                 value="{{ values.default_timezone }}" placeholder="Europe/Zurich"
-                 autocomplete="off">
-          <div class="suggestions" id="timezone-suggestions"></div>
-        </div>
-        <p class="hint">Start typing a city. Used when an email doesn't say where the
-          event happens.</p>
-      </div>
-    </div>
-    <div style="margin-top: 1.1rem;">
-      <label>Categories</label>
-      <p class="hint" style="margin: 0 0 .6rem;">Route kinds of events to their own
-        calendars. The description tells the model what belongs: say what counts and
-        what does not.</p>
-      <div id="categories">
-        {% for category in values.categories %}
-        <div class="category-row">
-          <input type="text" name="category_name" value="{{ category.name }}"
-                 placeholder="Name" aria-label="Category name">
-          <input type="text" name="category_description" value="{{ category.description }}"
-                 placeholder="What belongs here, e.g. concerts and gigs I have tickets for"
-                 aria-label="Category description">
-          <input type="text" name="category_calendar" value="{{ category.calendar }}"
-                 placeholder="Calendar" aria-label="Calendar name">
-          <button type="button" class="btn-ghost btn-sm"
-                  onclick="this.parentElement.remove()">Remove</button>
+      <p>Send Pushover notifications about processed emails.</p>
+    </header>
+    {# Only a card whose switch is on folds away. With no account the switch is off
+       because it has to be, and folding the card on that would take the sentence saying
+       so with it. #}
+    <section id="notification-settings"
+             {{- ' hidden' if pushover_ready and not posted['notifications_enabled'] }}>
+      {% if not pushover_ready %}
+      {{ waiting_on('Pushover', 'send notifications') }}
+      {% else %}
+      <div class="divide-y">
+        {% for field, label in [('notify_events', 'Events added'), ('notify_failures', 'Failures')] %}
+        <div role="group" class="field py-3" data-orientation="horizontal">
+          <label for="{{ field }}" class="font-normal">{{ label }}</label>
+          <input type="checkbox" role="switch" id="{{ field }}" name="{{ field }}"
+                 value="true"{{ ' checked' if posted[field] }}>
         </div>
         {% endfor %}
       </div>
-      <button type="button" class="btn-secondary btn-sm" id="add-category">Add category</button>
-    </div>
-    <details>
-      <summary>Advanced</summary>
-      <div class="grid">
-        <div>
-          <label for="caldav_url">Calendar server</label>
-          <input type="text" id="caldav_url" name="caldav_url" value="{{ values.caldav_url }}">
-          <p class="hint">iCloud by default. Any CalDAV server that accepts the same
-            username and password works.</p>
-        </div>
-      </div>
-    </details>
-  </section>
-
-  <section class="card">
-    <div class="card-head">
-      <h2>Phone notifications
-        {% if values.pushover_user and values.pushover_token %}<span class="badge ok">on</span>{% endif %}
-      </h2>
-      <p class="card-sub">Every flagged email gets an answer here, whether it worked or
-        not, through <a href="https://pushover.net" target="_blank" rel="noopener">Pushover</a>.
-        Without these keys, a failure is only visible on the Status page.</p>
-    </div>
-    <div class="grid">
-      <div>
-        <label for="pushover_user">User key</label>
-        <input type="text" id="pushover_user" name="pushover_user"
-               value="{{ values.pushover_user }}">
-        <p class="hint">Shown on your
-          <a href="https://pushover.net" target="_blank" rel="noopener">pushover.net</a>
-          dashboard once you're signed in.</p>
-      </div>
-      <div>
-        <label for="pushover_token">Application token</label>
-        <input type="password" id="pushover_token" name="pushover_token"
-               value="{{ values.pushover_token }}">
-        <p class="hint">Create an application for this service at
-          <a href="https://pushover.net/apps/build" target="_blank"
-             rel="noopener">pushover.net/apps/build</a> and copy its API token.</p>
-      </div>
-    </div>
-  </section>
-
-  <section class="card">
-    <div class="card-head">
-      <h2>Preferences</h2>
-    </div>
-    <div class="grid">
-      <div>
-        <label for="log_level">Log detail</label>
-        <select id="log_level" name="log_level">
-          {% for level in ['DEBUG', 'INFO', 'WARNING', 'ERROR'] %}
-          <option value="{{ level }}"
-                  {% if values.log_level | upper == level %}selected{% endif %}>
-            {{ level | capitalize }}</option>
-          {% endfor %}
-        </select>
-      </div>
-    </div>
-  </section>
-
-  <div class="savebar">
-    <button type="submit" class="btn-primary">Save changes</button>
+      {% endif %}
+    </section>
   </div>
 </form>
 
-<template id="category-template">
-  <div class="category-row">
-    <input type="text" name="category_name" placeholder="Name" aria-label="Category name">
-    <input type="text" name="category_description"
-           placeholder="What belongs here, e.g. concerts and gigs I have tickets for"
-           aria-label="Category description">
-    <input type="text" name="category_calendar" placeholder="Calendar"
-           aria-label="Calendar name">
-    <button type="button" class="btn-ghost btn-sm"
-            onclick="this.parentElement.remove()">Remove</button>
-  </div>
-</template>
+<div class="card mt-3" data-size="sm">
+  <header>
+    <h3>Categories</h3>
+    <p>Custom calendar routing.</p>
+  </header>
+  <section>
+    {% if not icloud_ready %}
+    {{ waiting_on('iCloud', 'configure categories') }}
+    {% else %}
+    <div class="divide-y">
+      {% for category in prefs.categories %}{{ category_row(category) }}{% endfor %}
+      <details class="setting">
+        <summary>
+          <span class="min-w-0 flex-1 font-medium">Add category</span>
+          {{ chevron() }}
+        </summary>
+        <div class="pb-4">
+          <form method="post" action="/settings/categories" data-save-scope>
+            <input type="hidden" name="tab" value="preferences">
+            {{ category_fields({'name': '', 'description': '', 'calendar': ''}) }}
+            <div class="mt-4 flex items-center gap-2">
+              <p class="save-error min-w-0 flex-1 text-xs text-stop" role="alert"></p>
+              <button class="btn" data-save data-size="sm" type="submit">Save</button>
+            </div>
+          </form>
+        </div>
+      </details>
+    </div>
+    {% endif %}
+  </section>
+</div>
+
+<div class="accordion accordion-tight mt-3 rounded-lg border px-3">
+  <details>
+    <summary class="text-base font-semibold tracking-tight">Advanced {{ chevron() }}</summary>
+    <fieldset class="fieldset gap-4 pb-3">
+      <div role="group" class="field">
+        <label for="log_level">Log level</label>
+        <select id="log_level" name="log_level" form="settings-form">
+          {% for level in log_levels %}
+          <option value="{{ level }}"{{ ' selected' if level == posted['log_level'] }}>{{ level }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </fieldset>
+    {# One line, three states: the version with a refresh icon to ask the registry; a
+       checkmark on it once a check pressed on this page says nothing is newer; an
+       Update button naming the newer build when there is one. Anything longer than the
+       line goes on the note underneath. #}
+    <div class="py-4" id="update-row" data-build="{{ build_id }}"
+         data-watchtower="{{ '1' if watchtower_ready else '' }}">
+      <p class="text-sm font-medium">Version</p>
+      <div class="mt-2 flex items-center gap-2">
+        <p class="flex min-w-0 flex-1 items-center gap-1.5 text-sm text-muted-foreground">
+          {%- if running_build %}<strong class="font-mono">{{ running_build }}</strong>
+          {%- else %}Unstamped build{% endif %}
+          <span class="flex items-center" id="update-current" hidden>
+            <svg class="size-4 text-ok" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                 aria-hidden="true">
+              <path d="M20 6 9 17l-5-5"/>
+            </svg>
+            <span class="sr-only">Current version</span>
+          </span>
+        </p>
+        <button class="btn refresh-button shrink-0" data-variant="ghost"
+                data-size="icon-sm" type="button" id="update-check"
+                onclick="checkForUpdates(this)" title="Check for updates"
+                aria-label="Check for updates">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
+            <path d="M21 3v5h-5"/>
+            <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
+            <path d="M8 16H3v5"/>
+          </svg>
+        </button>
+        {# A newer build is an up arrow and its number - a button while Watchtower is
+           connected to press it at, plain words while it is not. The button submits
+           the real form kept outside the preferences one, because forms do not nest. #}
+        <button class="btn shrink-0" data-size="sm" type="submit"
+                form="update-form" id="update-run" title="Update" hidden>
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>
+          </svg>
+          <span class="sr-only">Update to </span><span class="font-mono" id="update-run-to"></span>
+        </button>
+        <span class="flex shrink-0 items-center gap-1 text-sm text-muted-foreground"
+              id="update-newer" hidden>
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>
+          </svg>
+          <span class="sr-only">Newer build </span><span class="font-mono" id="update-newer-to"></span>
+        </span>
+      </div>
+      <p class="mt-2 text-xs text-muted-foreground" id="update-note" role="status"
+         aria-live="polite" hidden></p>
+    </div>
+  </details>
+</div>
+
+{# The post behind the Update button. It stands outside every other form because forms
+   do not nest; the button up in Advanced reaches it by name. #}
+<form method="post" action="/settings/update" id="update-form"></form>
+{% endset %}
+
+{# Saving comes back through a redirect, so the tab the form was on is carried in the
+   address and picked out again here rather than being lost to the default. #}
+<div class="settings">
+{{ bc.tabs(
+     id='settings-tabs',
+     tablist_attrs={'class': 'w-full'},
+     default_tab_index={'connections': 1, 'preferences': 2}.get(tab, 1),
+     tabsets=[
+       {'tab': 'Connections', 'panel': connections},
+       {'tab': 'Preferences', 'panel': preferences},
+     ]) }}
+</div>
+
 <script>
-  document.getElementById('add-category').addEventListener('click', () => {
-    const template = document.getElementById('category-template');
-    document.getElementById('categories').append(template.content.cloneNode(true));
-  });
+  // The tab is in the address, so a link to this page opens on the tab it was sent from,
+  // and a save that comes back through a redirect lands where it was made.
+  (function () {
+    var names = ["connections", "preferences"];
+    document.querySelectorAll('#settings-tabs [role="tab"]').forEach(function (tab, index) {
+      tab.addEventListener("click", function () {
+        var address = new URL(location.href);
+        address.searchParams.set("tab", names[index]);
+        history.replaceState(null, "", address);
+      });
+    });
+  })();
 
-  const ZONES = {{ timezones | tojson }};
-  const tzInput = document.getElementById('default_timezone');
-  const tzList = document.getElementById('timezone-suggestions');
-  let tzActive = -1;
+  // A save made inside the Advanced accordion carries a mark through the redirect so
+  // the section is standing open when the page comes back. The mark is then taken off
+  // the address: it recorded a moment, not a preference.
+  (function () {
+    var address = new URL(location.href);
+    if (!address.searchParams.has("advanced")) return;
+    var advanced = document.getElementById("connections-advanced");
+    if (advanced) advanced.open = true;
+    address.searchParams.delete("advanced");
+    history.replaceState(null, "", address);
+  })();
 
-  function hideZones() {
-    tzList.style.display = 'none';
-    tzActive = -1;
-  }
+  // A preference takes effect when it is changed rather than when a button is pressed,
+  // so there is no button. Posted in the background because a reload would lose the
+  // place on the page; a refusal is the one case that goes through the browser, so the
+  // reason lands on a page with the values on it.
+  (function () {
+    var form = document.getElementById("settings-form");
+    if (!form) return;
+    form.addEventListener("change", function (event) {
+      // The line under the flags names the one that is picked, in the colour it is
+      // picked in, and nothing reloads to redraw it.
+      if (event.target.name === "flag_colour") {
+        var colour = event.target.value;
+        var name = document.getElementById("flag-name");
+        name.textContent = colour.charAt(0).toUpperCase() + colour.slice(1);
+        name.dataset.colour = colour;
+      }
+      saveSettings();
+    });
+  })();
 
-  function showZones() {
-    const query = tzInput.value.trim().toLowerCase();
-    const matches = query
-      ? ZONES.filter(zone => zone.toLowerCase().includes(query)).slice(0, 12)
-      : [];
-    tzList.replaceChildren(...matches.map(zone => {
-      const item = document.createElement('div');
-      item.textContent = zone;
-      // mousedown, not click: it fires before the input's blur hides the list.
-      item.addEventListener('mousedown', () => { tzInput.value = zone; hideZones(); });
-      return item;
-    }));
-    tzList.style.display = matches.length ? 'block' : 'none';
-    tzActive = -1;
-  }
+  // Asking for notifications is asking for all of them. A row left off inside a card
+  // that was itself off is not a choice anybody remembers making, so turning the card
+  // back on turns every row on with it; the save that follows carries them.
+  (function () {
+    var master = document.getElementById("notifications_enabled");
+    if (!master) return;
+    master.addEventListener("change", function () {
+      if (!master.checked) return;
+      document
+        .querySelectorAll("#notification-settings input[type=checkbox]")
+        .forEach(function (box) {
+          box.checked = true;
+        });
+    });
+  })();
 
-  tzInput.addEventListener('input', showZones);
-  tzInput.addEventListener('focus', showZones);
-  tzInput.addEventListener('blur', hideZones);
-  tzInput.addEventListener('keydown', event => {
-    const items = tzList.children;
-    if (event.key === 'Escape') { hideZones(); return; }
-    if (!items.length) return;
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-      event.preventDefault();
-      tzActive = event.key === 'ArrowDown'
-        ? (tzActive + 1) % items.length
-        : (tzActive - 1 + items.length) % items.length;
-      [...items].forEach((item, i) => item.classList.toggle('active', i === tzActive));
-      items[tzActive].scrollIntoView({ block: 'nearest' });
-    } else if (event.key === 'Enter' && tzActive >= 0) {
-      event.preventDefault();
-      tzInput.value = items[tzActive].textContent;
-      hideZones();
+  // A card's own switch decides whether the rest of the card is on screen: there is
+  // nothing to configure about a job that is not running.
+  (function () {
+    document.querySelectorAll("[data-enables]").forEach(function (box) {
+      var governed = document.getElementById(box.dataset.enables);
+      if (!governed) return;
+      box.addEventListener("change", function () {
+        governed.hidden = !box.checked;
+      });
+    });
+  })();
+
+  async function saveSettings() {
+    var form = document.getElementById("settings-form");
+    var response;
+    try {
+      response = await fetch(form.action, {
+        method: "POST",
+        body: new FormData(form),
+        headers: { Accept: "application/json" },
+      });
+    } catch (error) {
+      form.submit();
+      return false;
     }
+    if (!response.ok) {
+      form.submit();
+      return false;
+    }
+    return true;
+  }
+
+  // A Save that would post what is already on file has nothing to do, so it is off
+  // until a box holds something the server did not draw into it. An empty box is what
+  // "leave this one alone" is written as - a stored secret is never rendered back - so
+  // emptying one is not a change either.
+  function showSaveState(scope) {
+    var save = scope.querySelector("[data-save]");
+    if (!save) return;
+    var changed = false;
+    var fillable = true;
+    scope.querySelectorAll("input:not([type=hidden]), select").forEach(function (box) {
+      if (!box.validity.valid) fillable = false;
+      if (box.tagName === "SELECT") {
+        if (box.value !== (box.dataset.selected || "")) changed = true;
+        return;
+      }
+      if (box.value === box.defaultValue) return;
+      if (box.value.trim()) changed = true;
+    });
+    save.disabled = !changed || !fillable;
+  }
+
+  document.querySelectorAll("[data-save-scope]").forEach(function (scope) {
+    showSaveState(scope);
+    scope.addEventListener("input", function () {
+      showSaveState(scope);
+    });
   });
+
+  // The calendars are three round trips to iCloud, so the page does not wait on them.
+  // The options are HTML the server already knows how to draw, so they are dropped
+  // straight into every picker rather than rebuilt here, and each picker then settles
+  // on the one it was drawn for.
+  (async function () {
+    var selects = document.querySelectorAll("select[data-calendars]");
+    if (!selects.length) return;
+    var options;
+    try {
+      var response = await fetch("/settings/calendars");
+      if (!response.ok) throw new Error(response.status);
+      options = await response.text();
+    } catch (error) {
+      options = '<option value="" data-error>iCloud could not be reached</option>';
+    }
+    selects.forEach(function (select) {
+      select.innerHTML = options;
+      var failed = select.querySelector("[data-error]");
+      var help = document.getElementById(select.getAttribute("aria-describedby"));
+      if (failed) {
+        if (help) help.textContent = failed.textContent.trim();
+        select.innerHTML = "<option>Unavailable</option>";
+      } else {
+        // A picker with nothing picked yet says so, rather than showing the first
+        // calendar as if it were the one in force.
+        var chosen = select.dataset.selected;
+        var placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = "Pick a calendar";
+        placeholder.disabled = true;
+        select.prepend(placeholder);
+        // A calendar that was picked and has since gone from the account is still
+        // the one on file, so it stays in the picker, and says why.
+        if (chosen && ![...select.options].some(function (o) { return o.value === chosen; })) {
+          var gone = document.createElement("option");
+          gone.value = chosen;
+          gone.textContent = chosen + " (no longer on this account)";
+          select.append(gone);
+        }
+        select.value = chosen || "";
+      }
+      select.disabled = !!failed;
+      select.removeAttribute("aria-busy");
+      select.parentElement.querySelector(".spinner").hidden = true;
+      var scope = select.closest("[data-save-scope]");
+      if (scope) showSaveState(scope);
+    });
+  })();
+
+  // Saving a connection goes and asks the service whether the details work, which
+  // takes as long as that service does. The button says so, and a refusal lands next
+  // to the button that was pressed rather than at the top of the page: the row stays
+  // open on what was typed, and only a save that worked folds it away.
+  document.addEventListener("submit", async function (event) {
+    var form = event.target;
+    if (form.method !== "post" || event.defaultPrevented) return;
+    var button = event.submitter || form.querySelector('button[type="submit"]');
+    if (!button || button.name === "forget") return;
+    var note = form.querySelector(".save-error");
+    if (!note) {
+      setBusy(button, true);
+      return;
+    }
+    event.preventDefault();
+    note.textContent = "";
+    setBusy(button, true);
+    var body = new FormData(form);
+    if (button.name) body.set(button.name, button.value);
+    try {
+      var response = await fetch(form.action, {
+        method: "POST",
+        body: body,
+        headers: { Accept: "application/json" },
+      });
+      if (response.ok) {
+        // Back on the tab it was saved from. Which rows are open is the page's own
+        // answer: the one just saved has nothing left to ask for. A save made inside
+        // Advanced comes back with Advanced still standing open.
+        var tab = form.elements.tab ? form.elements.tab.value : "connections";
+        var target = "/settings?tab=" + tab;
+        if (form.closest("#connections-advanced")) target += "&advanced=1";
+        location.assign(target);
+        return;
+      }
+      var answer = await response.json().catch(function () {
+        return {};
+      });
+      note.textContent = answer.error || "Could not save";
+    } catch (error) {
+      note.textContent = "Could not reach the server";
+    }
+    setBusy(button, false);
+  });
+
+  function setBusy(button, busy) {
+    button.disabled = busy;
+    button.classList.toggle("is-busy", busy);
+  }
+
+  // Cancelling puts the boxes back to what the server drew, so reopening Edit does not
+  // show yesterday's half-typed attempt.
+  function cancelEdit(button) {
+    var details = button.closest("details");
+    details.querySelectorAll("input").forEach(function (box) {
+      box.value = box.defaultValue;
+    });
+    showSaveState(details.querySelector("[data-save-scope]"));
+    details.querySelector(".save-error").textContent = "";
+    details.open = false;
+  }
+
+  // Remove is drawn beside Edit but posts the form kept below, which is the one that
+  // carries the flag that clears the credentials.
+  function removeAccount(event, key) {
+    // Inside a summary, so without this the row would fold open on its way out.
+    event.preventDefault();
+    event.stopPropagation();
+    var form = document.getElementById(key + "-remove");
+    form.requestSubmit(form.querySelector('button[name="forget"]'));
+  }
+
+  // What is running is in the page; what is published is a few registry round trips
+  // away, so the Version row fills in after the page the way the calendar picker does.
+  // A check that fails changes nothing: the row already says what is running, and the
+  // refresh icon is there to ask again. This pass never raises the checkmark - that is
+  // earned by a check pressed on this page, not remembered from an earlier load.
+  (async function () {
+    if (!document.getElementById("update-row")) return;
+    try {
+      var response = await fetch("/settings/update/check");
+      if (!response.ok) throw new Error(response.status);
+      showUpdateState(await response.json());
+    } catch (error) {}
+  })();
+
+  // The refresh icon is a person asking now, so the cached answer is not good enough:
+  // ?force=1 goes to the registry however recently the page last asked.
+  async function checkForUpdates(button) {
+    document.getElementById("update-current").hidden = true;
+    setBusy(button, true);
+    try {
+      var response = await fetch("/settings/update/check?force=1");
+      if (!response.ok) throw new Error(response.status);
+      showUpdateState(await response.json(), true);
+    } catch (error) {
+      updateNote("Could not check for updates.");
+    }
+    setBusy(button, false);
+  }
+
+  function shortSha(value) {
+    return value ? value.slice(0, 7) : "";
+  }
+
+  function updateNote(text) {
+    var note = document.getElementById("update-note");
+    note.textContent = text || "";
+    note.hidden = !text;
+  }
+
+  // One line, three answers. Nothing newer: a checkmark on the version number, but
+  // only when `checked` says a check was pressed on this page. Something newer: an up
+  // arrow and its number - a button while Watchtower is there to press it at, plain
+  // words while it is not, with the note underneath saying where to connect one. No
+  // answer: the note says why not.
+  function showUpdateState(state, checked) {
+    var watchtower = !!document.getElementById("update-row").dataset.watchtower;
+    var current = state.available === false;
+    var newer = state.available === true;
+    var check = document.getElementById("update-current");
+    check.hidden = !(current && checked);
+    if (!check.hidden) {
+      check.classList.remove("fade-in");
+      void check.offsetWidth;
+      check.classList.add("fade-in");
+    }
+    document.getElementById("update-run").hidden = !(newer && watchtower);
+    document.getElementById("update-newer").hidden = !(newer && !watchtower);
+    if (newer) {
+      var to = shortSha(state.latest);
+      document.getElementById("update-run-to").textContent = to;
+      document.getElementById("update-newer-to").textContent = to;
+      updateNote(
+        watchtower ? "" : "Connect Watchtower under Connections to install updates from here."
+      );
+    } else if (current) {
+      updateNote("");
+    } else if (state.running) {
+      updateNote("The registry could not be read, so newer builds cannot be seen.");
+    } else {
+      updateNote("An unstamped build cannot be compared with the registry.");
+    }
+  }
+
+  // The update is Watchtower stopping this very server, so the request dying without an
+  // answer is the button working. Anything with an answer is a refusal or "nothing
+  // newer"; anything without one is watched for the restart instead.
+  (function () {
+    var form = document.getElementById("update-form");
+    if (!form) return;
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      runUpdate(document.getElementById("update-run"));
+    });
+  })();
+
+  async function runUpdate(button) {
+    setBusy(button, true);
+    updateNote("Asking Watchtower…");
+    try {
+      var response = await fetch("/settings/update", {
+        method: "POST",
+        headers: { Accept: "application/json" },
+        signal: AbortSignal.timeout(15000),
+      });
+      var answer = await response.json().catch(function () {
+        return {};
+      });
+      if (!answer.restarting) {
+        updateNote(answer.detail || "Watchtower did not answer as expected.");
+        setBusy(button, false);
+        return;
+      }
+    } catch (error) {
+      // The connection dying mid-request is the update reaching this very container.
+    }
+    updateNote("Updating - email-to-cal is restarting, this page will reload itself…");
+    awaitRestart(button);
+  }
+
+  // A new process answers with a new build id whether or not the image carries a commit
+  // stamp, so that is what the poll watches for. Not answering is expected for a while:
+  // the container is being pulled and recreated.
+  function awaitRestart(button) {
+    var was = document.getElementById("update-row").dataset.build;
+    var deadline = Date.now() + 3 * 60000;
+    (function look() {
+      if (Date.now() > deadline) {
+        updateNote("Still not back on a new build - check the Watchtower logs.");
+        setBusy(button, false);
+        return;
+      }
+      fetch("/settings/update/check?poll=1", {
+        cache: "no-store",
+        signal: AbortSignal.timeout(4000),
+      })
+        .then(function (response) {
+          return response.json();
+        })
+        .then(
+          function (state) {
+            if (state.build && state.build !== was) location.reload();
+            else setTimeout(look, 2000);
+          },
+          function () {
+            setTimeout(look, 2000);
+          }
+        );
+    })();
+  }
 </script>
 
 {% endblock %}

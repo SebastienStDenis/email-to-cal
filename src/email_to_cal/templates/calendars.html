@@ -1,0 +1,10 @@
+{# The pickers' options on their own, fetched into every select once the page is up.
+   The failure is an option too, so a picker that cannot be filled says why in the one
+   place somebody is already looking. #}
+{% if error %}
+<option value="" data-error>{{ error }}</option>
+{% else %}
+{% for calendar in calendars %}
+<option value="{{ calendar }}">{{ calendar }}</option>
+{% endfor %}
+{% endif %}

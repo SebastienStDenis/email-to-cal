@@ -1,0 +1,13 @@
+{
+  "name": "email-to-cal-ui",
+  "private": true,
+  "description": "Build step for the stylesheet the app serves.",
+  "scripts": {
+    "build": "tailwindcss --input styles/app.css --output src/email_to_cal/static/email-to-cal.css --minify"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.1.17",
+    "basecoat-css": "^1.0.2",
+    "tailwindcss": "^4.1.17"
+  }
+}

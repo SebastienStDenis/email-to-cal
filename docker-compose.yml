@@ -1,0 +1,47 @@
+services:
+  email-to-cal:
+    image: ghcr.io/sebastienstdenis/email-to-cal:latest
+    build: .
+    container_name: email-to-cal
+    restart: unless-stopped
+    env_file:
+      # Absent on a fresh clone, and nothing here needs it: every credential is entered
+      # on the settings page and stored in the volume. A file here only ever seeds one
+      # before the first boot.
+      - path: .env
+        required: false
+    ports:
+      # The portal has no login, so keep it bound to localhost. On a remote server,
+      # reach it with: ssh -L 8080:localhost:8080 your-server
+      - "127.0.0.1:8080:8080"
+    volumes:
+      # The whole of the deployment's state: the SQLite database and every credential.
+      # Back this up; a copy of it is a copy of the credentials.
+      - data:/app/data
+
+  # The Update button on the settings page asks Watchtower to pull a newer image and
+  # recreate the app - the app cannot replace its own container from inside it, so
+  # Watchtower holds the socket and the app only ever holds a token. Uncomment this (or
+  # fold the two environment lines into a Watchtower you already run), then enter
+  # http://watchtower:8080 and the token under Settings → Connections → Advanced. See
+  # docs/updates.md.
+  #
+  # watchtower:
+  #   # The maintained fork; the archived containrrr/watchtower speaks the same API
+  #   # and works too.
+  #   image: nickfedor/watchtower
+  #   container_name: watchtower
+  #   restart: unless-stopped
+  #   environment:
+  #     # The fork's spelling is WATCHTOWER_HTTP_API_ENDPOINTS=update; this older one
+  #     # is what both it and the original understand.
+  #     - WATCHTOWER_HTTP_API_UPDATE=true
+  #     - WATCHTOWER_HTTP_API_TOKEN=choose-a-long-random-string
+  #     # Keeps the scheduled sweep running alongside the button; without this line,
+  #     # updates only happen when the button asks for one.
+  #     - WATCHTOWER_HTTP_API_PERIODIC_POLLS=true
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  data:
