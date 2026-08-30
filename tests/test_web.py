@@ -420,12 +420,16 @@ def test_the_update_check_says_what_runs_and_what_is_published(
 ) -> None:
     def checked(*, refresh: bool = True, force: bool = False) -> Any:
         assert refresh and force
-        return web.updates.UpdateStatus(running="a" * 40, latest="b" * 40, checked=1.0)
+        return web.updates.UpdateStatus(
+            running="a" * 40, latest="b" * 40, checked=1.0, latest_version="v321"
+        )
 
     monkeypatch.setattr(web.updates, "status", checked)
     answer = client.get("/settings/update/check?force=1").json
     assert answer["available"] is True
     assert answer["latest"] == "b" * 40
+    # The name a person reads for that build, beside the commit that identifies it.
+    assert answer["latest_version"] == "v321"
     # What the poll after an update actually watches: any new image changes it.
     assert answer["build"]
 
@@ -535,6 +539,8 @@ def test_the_page_lists_what_reached_the_calendar(client: FlaskClient) -> None:
     # An all-day event is stored by its day, and said that way.
     assert "Sat 22 Aug" in text
     assert "Sat 22 Aug 00:00" not in text
+    # Each row opens the Calendar app on the event's day, aimed at its noon.
+    assert text.count('href="calshow:') == 2
 
 
 def test_retrying_forgets_only_that_failure(client: FlaskClient) -> None:

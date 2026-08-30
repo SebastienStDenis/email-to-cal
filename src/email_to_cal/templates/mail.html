@@ -117,13 +117,24 @@
 <div class="item-group gap-2">
   {% for event in events %}
   <div class="item" data-variant="outline" data-size="sm">
-    <section class="min-w-0">
+    <section class="min-w-0 self-start">
       <h3 class="max-w-full"><span class="truncate">{{ event.summary }}</span></h3>
       <p class="font-mono">{{ event.starts_at|starts }}</p>
     </section>
-    <aside class="items-center gap-2">
-      <span class="text-xs whitespace-nowrap text-muted-foreground">{{ event.created_at|ago }}</span>
+    <aside class="items-center gap-1 self-start">
+      <a class="btn -mr-2" data-variant="ghost" data-size="icon-sm"
+         href="{{ event.starts_at|calshow }}"
+         title="Open in Calendar" aria-label="Open in Calendar">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3" y="4" width="18" height="18" rx="2"/>
+          <path d="M16 2v4M8 2v4M3 10h18"/>
+        </svg>
+      </a>
     </aside>
+    <footer class="justify-end">
+      <span class="shrink-0 text-xs whitespace-nowrap text-muted-foreground">{{ event.created_at|ago }}</span>
+    </footer>
   </div>
   {% endfor %}
 </div>

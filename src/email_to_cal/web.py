@@ -16,7 +16,7 @@ from datetime import datetime
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
-from zoneinfo import available_timezones
+from zoneinfo import ZoneInfo, available_timezones
 
 from flask import Flask, Response, abort, jsonify, redirect, render_template, request
 from pydantic import ValidationError
@@ -26,7 +26,7 @@ from werkzeug.wrappers import Response as WerkzeugResponse
 
 from . import prefs, updates
 from .app import run
-from .cal import CalendarClient, mail_link
+from .cal import APPLE_EPOCH_OFFSET, CalendarClient, mail_link
 from .checks import check_calendar, check_service
 from .config import CREDENTIALS, SERVICES, STATE_FILE, Settings, write_secrets
 from .mailbox import FLAG_COLOURS
@@ -131,6 +131,22 @@ def starts(value: str) -> str:
     return f"{datetime.fromisoformat(value):%a %-d %b %H:%M}"
 
 
+def calshow(value: str) -> str:
+    """A link that opens the Calendar app on the event's day.
+
+    The same aim as a push's link (see cal.BuiltEvent.calendar_link): noon of the day,
+    so the date survives whatever zone the phone opening it is in. An all-day event is
+    stored by its day alone, so its noon is read in the operator's own zone.
+    """
+    if len(value) == 10:
+        noon = datetime.fromisoformat(f"{value}T12:00:00").replace(
+            tzinfo=ZoneInfo(prefs.current().timezone)
+        )
+    else:
+        noon = datetime.fromisoformat(value).replace(hour=12, minute=0, second=0, microsecond=0)
+    return f"calshow:{int(noon.timestamp() - APPLE_EPOCH_OFFSET)}"
+
+
 def _build_id() -> str:
     """A fingerprint of the code being served, so the page can tell a new process from
     the one it asked to update - stamped commit or not."""
@@ -175,7 +191,7 @@ def create_app(supervisor: Supervisor) -> Flask:
     app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1, x_port=1)  # type: ignore[method-assign]
     app.secret_key = secrets.token_hex(32)
     app.jinja_env.globals.update(email_url=mail_link)
-    app.jinja_env.filters.update(ago=ago, starts=starts)
+    app.jinja_env.filters.update(ago=ago, calshow=calshow, starts=starts)
     # Once for the process rather than per use: it also tells the poll after an update
     # that the process answering is a new one, stamped commit or not.
     build = _build_id()
@@ -206,7 +222,11 @@ def create_app(supervisor: Supervisor) -> Flask:
             # The Watchtower address is the other value shown back: a name on the
             # compose network, not a secret.
             "watchtower_url": settings.watchtower_url,
-            "running_build": updates.RUNNING_SHA[:7],
+            # The counted version number where the workflow stamped one, the short
+            # commit for images from before it counted; the full commit rides along
+            # as the hover for whoever needs the exact build.
+            "running_build": updates.RUNNING_VERSION or updates.RUNNING_SHA[:7],
+            "running_sha": updates.RUNNING_SHA,
             "build_id": build,
             "flag_colours": tuple(FLAG_COLOURS),
             "timezones": sorted(available_timezones()),
@@ -425,6 +445,9 @@ def create_app(supervisor: Supervisor) -> Flask:
             {
                 "running": state.running,
                 "latest": state.latest,
+                # The number the newer build goes by, when the registry says one;
+                # display only, the comparison above is between commits.
+                "latest_version": state.latest_version,
                 "available": state.available,
                 "error": state.error,
                 "build": build,

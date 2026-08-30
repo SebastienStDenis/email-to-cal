@@ -15,7 +15,7 @@ import pytest
 
 from email_to_cal import updates
 from email_to_cal.config import Settings
-from email_to_cal.updates import ImageRef, UpdateStatus, parse_image
+from email_to_cal.updates import ImageRef, Published, UpdateStatus, parse_image
 
 RUNNING = "a" * 40
 NEWER = "b" * 40
@@ -34,7 +34,14 @@ INDEX = {
 
 MANIFEST = {"config": {"digest": "sha256:cfg"}}
 
-CONFIG = {"config": {"Labels": {"org.opencontainers.image.revision": NEWER}}}
+CONFIG = {
+    "config": {
+        "Labels": {
+            "org.opencontainers.image.revision": NEWER,
+            "org.opencontainers.image.version": "v321",
+        }
+    }
+}
 
 
 @pytest.fixture(autouse=True)
@@ -102,22 +109,25 @@ def test_the_watchtower_filter_is_the_ref_without_the_tag() -> None:
     assert REF.name == "ghcr.io/sebastienstdenis/email-to-cal"
 
 
-def test_the_revision_is_read_off_the_image_config() -> None:
+def test_the_build_is_read_off_the_image_config() -> None:
     with httpx.Client(transport=registry(), follow_redirects=True) as client:
-        assert updates.published_revision(REF, client) == NEWER
+        assert updates.published_build(REF, client) == Published(NEWER, "v321")
 
 
 def test_the_token_dance_happens_once_for_the_whole_walk() -> None:
     asked: list[str] = []
     with httpx.Client(transport=registry(asked), follow_redirects=True) as client:
-        updates.published_revision(REF, client)
+        updates.published_build(REF, client)
     assert asked.count("/token") == 1
 
 
 def test_index_annotations_answer_without_the_walk() -> None:
     annotated = {
         "manifests": INDEX["manifests"],
-        "annotations": {"org.opencontainers.image.revision": NEWER},
+        "annotations": {
+            "org.opencontainers.image.revision": NEWER,
+            "org.opencontainers.image.version": "v321",
+        },
     }
     asked: list[str] = []
 
@@ -126,8 +136,24 @@ def test_index_annotations_answer_without_the_walk() -> None:
         return httpx.Response(200, json=annotated)
 
     with httpx.Client(transport=httpx.MockTransport(handle)) as client:
-        assert updates.published_revision(REF, client) == NEWER
+        assert updates.published_build(REF, client) == Published(NEWER, "v321")
     assert asked == ["/v2/sebastienstdenis/email-to-cal/manifests/latest"]
+
+
+def test_a_version_merely_echoing_the_tag_is_not_one() -> None:
+    """The metadata step used to derive the version label from the tag itself."""
+    annotated = {
+        "annotations": {
+            "org.opencontainers.image.revision": NEWER,
+            "org.opencontainers.image.version": "latest",
+        }
+    }
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=annotated)
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        assert updates.published_build(REF, client) == Published(NEWER, None)
 
 
 def test_an_unlabelled_image_answers_none_rather_than_raising() -> None:
@@ -137,7 +163,7 @@ def test_an_unlabelled_image_answers_none_rather_than_raising() -> None:
         return httpx.Response(200, json={"config": {"digest": "sha256:cfg"}, "bare": True})
 
     with httpx.Client(transport=httpx.MockTransport(handle)) as client:
-        assert updates.published_revision(REF, client) is None
+        assert updates.published_build(REF, client) == Published(None, None)
 
 
 def test_available_is_honest_about_what_it_cannot_compare() -> None:
@@ -278,6 +304,7 @@ def test_a_failed_registry_read_is_not_stamped_as_fresh(
 
     state = updates.status(transport=registry())
     assert state.latest == NEWER
+    assert state.latest_version == "v321"
     assert state.error is None
     assert state.checked is not None
 
