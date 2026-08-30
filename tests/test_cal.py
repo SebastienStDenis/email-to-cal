@@ -97,6 +97,52 @@ def test_invented_message_ids_get_no_mail_link(settings: Settings) -> None:
     assert "message://" not in text
 
 
+def test_a_time_in_the_operators_own_zone_is_not_labelled(settings: Settings) -> None:
+    event = ExtractedEvent(
+        kind="appointment",
+        title="Dentist",
+        all_day=False,
+        start_local="2026-09-14T12:30:00",
+        start_tz="Europe/Zurich",
+    )
+    # Naming the zone on every event would make the common case noisier for nothing.
+    built = build_ical(event, settings, message_id="<a@b>")
+    assert built.describe() == "Dentist - Mon 14 Sep 12:30"
+
+
+def test_a_venue_named_after_a_city_does_not_move_the_event(settings: Settings) -> None:
+    # The reported bug: the push said 12:30 and the calendar showed the event six hours
+    # earlier, because "Boston" in the restaurant's name resolved a lunch in Ottawa to
+    # America/New_York. The city field says Ottawa, and nothing else gets a vote.
+    event = ExtractedEvent(
+        kind="restaurant",
+        title="Lunch",
+        all_day=False,
+        start_local="2026-09-14T12:30:00",
+        location=EventLocation(
+            name="Boston Pizza",
+            street="1500 Bank Street",
+            locality="Ottawa",
+            region="ON",
+            country="CA",
+        ),
+    )
+    built = build_ical(event, settings, message_id="<a@b>")
+    assert "DTSTART;TZID=Europe/Zurich:20260914T123000" in ical_text(event, settings)
+    assert built.describe() == "Lunch - Mon 14 Sep 12:30"
+
+
+def test_the_city_field_still_resolves_the_zone(settings: Settings) -> None:
+    event = ExtractedEvent(
+        kind="concert",
+        title="Radiohead",
+        all_day=False,
+        start_local="2026-09-14T20:00:00",
+        location=EventLocation(name="The O2 Arena", locality="London", country="GB"),
+    )
+    assert "DTSTART;TZID=Europe/London:20260914T200000" in ical_text(event, settings)
+
+
 def test_location_without_an_address_still_names_the_venue(settings: Settings) -> None:
     event = ExtractedEvent(
         kind="concert",
@@ -111,7 +157,8 @@ def test_location_without_an_address_still_names_the_venue(settings: Settings) -
 def test_notification_link_opens_the_calendar_on_the_day(settings: Settings) -> None:
     built = build_ical(flight(), settings, message_id="<a@b>")
     assert built.starts_at.isoformat() == "2026-09-14T18:35:00+09:00"
-    assert built.describe() == "NH106 HND to LAX - Mon 14 Sep 18:35"
+    # 18:35 is Tokyo's 18:35, and a push read in Zurich has no other way to know that.
+    assert built.describe() == "NH106 HND to LAX - Mon 14 Sep 18:35 Tokyo time"
 
     # calshow takes an instant, which the phone renders in whatever zone it is in. Noon
     # where the event happens survives that; the 18:35 start would show as the 13th on a

@@ -28,9 +28,11 @@ PDFs and images passed to the model as vision input - which is how boarding pass
 e-tickets get read.
 
 Timezones are resolved deterministically: an explicit zone in the email beats an offline
-IATA airport lookup, which beats a city match, which beats your configured default. A
-Tokyo → Los Angeles flight gets `Asia/Tokyo` on the departure and `America/Los_Angeles`
-on the arrival, and renders correctly in both.
+IATA airport lookup, which beats the address's city, which beats your configured default.
+A Tokyo → Los Angeles flight gets `Asia/Tokyo` on the departure and `America/Los_Angeles`
+on the arrival, and renders correctly in both. Only the city field itself is read, and a
+stated country has to agree with it - a lunch at a "Boston Pizza" in Ottawa stays in
+Ottawa's zone, and London, Ontario is not five hours ahead of itself.
 
 Locations are written as full addresses, because a calendar geocodes the location string
 and only shows a map, directions, and travel time when it resolves. The model collects
@@ -189,7 +191,9 @@ API token and your user key in the portal.
 
 Both outcomes are pushed. A created event arrives silently and opens the Calendar app on
 the day of the event; a failure arrives as a normal push and opens the email it came
-from. Anything that stops the service - an expired app password, a rejected API key -
+from. A time in the push is always the local time where the event happens, and the push
+names that zone when it is not your own - so a 19:30 concert in London reads as London's
+19:30, which is what the calendar will show you when you get there. Anything that stops the service - an expired app password, a rejected API key -
 arrives at high priority. The event itself carries a link back to the email, so the way
 back is always there.
 
